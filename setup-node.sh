@@ -70,8 +70,9 @@ if [[ -z "$SECRET_KEY" ]]; then
 fi
 
 # ─── Автоопределение IP ───────────────────────────────────────────────────────
-SERVER_IP=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null \
-         || curl -s --max-time 5 https://api.ipify.org 2>/dev/null \
+SERVER_IP=$(curl -4 -s --max-time 5 https://ifconfig.me 2>/dev/null \
+         || curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null \
+         || curl -s --max-time 5 https://ifconfig.me 2>/dev/null \
          || hostname -I | awk '{print $1}')
 [[ -z "$SERVER_IP" ]] && die "Не удалось определить внешний IP"
 
@@ -123,10 +124,14 @@ else
   else CPU_LEVEL="x64v1"; fi
   info "CPU: $CPU_LEVEL"
 
-  # Установка GPG ключа XanMod (совместимо со всеми версиями)
+  # Установка GPG ключа XanMod (User-Agent нужен — некоторые CDN блокируют голый curl)
   apt-get install -y -qq gnupg
   rm -f /etc/apt/trusted.gpg.d/xanmod*.gpg
-  curl -fsSL https://dl.xanmod.org/archive.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg
+  if ! curl -fsSL -A "Mozilla/5.0" https://dl.xanmod.org/archive.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg 2>/dev/null; then
+    # Фолбэк: скачиваем ключ через apt-key с GitHub зеркала
+    wget -qO- https://raw.githubusercontent.com/xanmod/linux/main/keys/signing.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg 2>/dev/null \
+      || die "Не удалось скачать GPG ключ XanMod"
+  fi
   echo "deb [signed-by=/etc/apt/trusted.gpg.d/xanmod-archive.gpg] http://deb.xanmod.org releases main" \
     > /etc/apt/sources.list.d/xanmod-release.list
   apt-get update -qq
