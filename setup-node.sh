@@ -124,28 +124,25 @@ else
   else CPU_LEVEL="x64v1"; fi
   info "CPU: $CPU_LEVEL"
 
-  # Установка GPG ключа XanMod
+  # Установка GPG ключа XanMod (несколько источников — dl.xanmod.org блокирует некоторые хостинги)
   apt-get install -y -qq gnupg
-  rm -f /etc/apt/trusted.gpg.d/xanmod*.gpg
+  rm -f /etc/apt/trusted.gpg.d/xanmod*.gpg /tmp/xanmod.key
+  local GPG_OUT="/etc/apt/trusted.gpg.d/xanmod-archive.gpg"
   local key_ok=false
-  # Попытка 1: dl.xanmod.org (с User-Agent, иначе некоторые CDN блокируют)
-  if curl -fsSL -A "Mozilla/5.0" https://dl.xanmod.org/archive.key -o /tmp/xanmod.key 2>/dev/null && [[ -s /tmp/xanmod.key ]]; then
-    gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg < /tmp/xanmod.key 2>/dev/null && key_ok=true
-  fi
-  # Попытка 2: wget (другой User-Agent)
-  if [[ "$key_ok" != "true" ]]; then
-    info "dl.xanmod.org недоступен, пробуем wget..."
-    if wget -qO /tmp/xanmod.key https://dl.xanmod.org/archive.key 2>/dev/null && [[ -s /tmp/xanmod.key ]]; then
-      gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg < /tmp/xanmod.key 2>/dev/null && key_ok=true
+  local KEY_URLS=(
+    "https://dl.xanmod.org/archive.key"
+    "https://dl.xanmod.org/gpg.key"
+    "https://gitlab.com/xanmod/linux/-/raw/main/keys/signing.key"
+  )
+  for url in "${KEY_URLS[@]}"; do
+    if curl -fsSL -A "Mozilla/5.0" --max-time 10 "$url" -o /tmp/xanmod.key 2>/dev/null && [[ -s /tmp/xanmod.key ]]; then
+      if gpg --yes --dearmor -o "$GPG_OUT" < /tmp/xanmod.key 2>/dev/null; then
+        key_ok=true; ok "GPG ключ получен: $url"; break
+      fi
     fi
-  fi
-  # Попытка 3: apt-key (старый метод, работает везде)
-  if [[ "$key_ok" != "true" ]]; then
-    info "Пробуем apt-key..."
-    curl -fsSL -A "Mozilla/5.0" https://dl.xanmod.org/archive.key | apt-key add - 2>/dev/null && key_ok=true
-  fi
+  done
   rm -f /tmp/xanmod.key
-  [[ "$key_ok" != "true" ]] && die "Не удалось скачать GPG ключ XanMod — проверь доступность dl.xanmod.org"
+  [[ "$key_ok" != "true" ]] && die "Не удалось скачать GPG ключ XanMod ни из одного источника"
   echo "deb [signed-by=/etc/apt/trusted.gpg.d/xanmod-archive.gpg] http://deb.xanmod.org releases main" \
     > /etc/apt/sources.list.d/xanmod-release.list
   apt-get update -qq
