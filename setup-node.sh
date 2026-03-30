@@ -124,14 +124,28 @@ else
   else CPU_LEVEL="x64v1"; fi
   info "CPU: $CPU_LEVEL"
 
-  # Установка GPG ключа XanMod (User-Agent нужен — некоторые CDN блокируют голый curl)
+  # Установка GPG ключа XanMod
   apt-get install -y -qq gnupg
   rm -f /etc/apt/trusted.gpg.d/xanmod*.gpg
-  if ! curl -fsSL -A "Mozilla/5.0" https://dl.xanmod.org/archive.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg 2>/dev/null; then
-    # Фолбэк: скачиваем ключ через apt-key с GitHub зеркала
-    wget -qO- https://raw.githubusercontent.com/xanmod/linux/main/keys/signing.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg 2>/dev/null \
-      || die "Не удалось скачать GPG ключ XanMod"
+  local key_ok=false
+  # Попытка 1: dl.xanmod.org (с User-Agent, иначе некоторые CDN блокируют)
+  if curl -fsSL -A "Mozilla/5.0" https://dl.xanmod.org/archive.key -o /tmp/xanmod.key 2>/dev/null && [[ -s /tmp/xanmod.key ]]; then
+    gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg < /tmp/xanmod.key 2>/dev/null && key_ok=true
   fi
+  # Попытка 2: wget (другой User-Agent)
+  if [[ "$key_ok" != "true" ]]; then
+    info "dl.xanmod.org недоступен, пробуем wget..."
+    if wget -qO /tmp/xanmod.key https://dl.xanmod.org/archive.key 2>/dev/null && [[ -s /tmp/xanmod.key ]]; then
+      gpg --dearmor -o /etc/apt/trusted.gpg.d/xanmod-archive.gpg < /tmp/xanmod.key 2>/dev/null && key_ok=true
+    fi
+  fi
+  # Попытка 3: apt-key (старый метод, работает везде)
+  if [[ "$key_ok" != "true" ]]; then
+    info "Пробуем apt-key..."
+    curl -fsSL -A "Mozilla/5.0" https://dl.xanmod.org/archive.key | apt-key add - 2>/dev/null && key_ok=true
+  fi
+  rm -f /tmp/xanmod.key
+  [[ "$key_ok" != "true" ]] && die "Не удалось скачать GPG ключ XanMod — проверь доступность dl.xanmod.org"
   echo "deb [signed-by=/etc/apt/trusted.gpg.d/xanmod-archive.gpg] http://deb.xanmod.org releases main" \
     > /etc/apt/sources.list.d/xanmod-release.list
   apt-get update -qq
