@@ -127,9 +127,9 @@ else
   # Установка GPG ключа XanMod (несколько источников — dl.xanmod.org блокирует некоторые хостинги)
   apt-get install -y -qq gnupg
   rm -f /etc/apt/trusted.gpg.d/xanmod*.gpg /tmp/xanmod.key
-  local GPG_OUT="/etc/apt/trusted.gpg.d/xanmod-archive.gpg"
-  local key_ok=false
-  local KEY_URLS=(
+  GPG_OUT="/etc/apt/trusted.gpg.d/xanmod-archive.gpg"
+  key_ok=false
+  KEY_URLS=(
     "https://dl.xanmod.org/archive.key"
     "https://dl.xanmod.org/gpg.key"
     "https://gitlab.com/xanmod/linux/-/raw/main/keys/signing.key"
