@@ -124,26 +124,10 @@ else
   else CPU_LEVEL="x64v1"; fi
   info "CPU: $CPU_LEVEL"
 
-  # Установка GPG ключа XanMod (несколько источников — dl.xanmod.org блокирует некоторые хостинги)
-  apt-get install -y -qq gnupg
-  rm -f /etc/apt/trusted.gpg.d/xanmod*.gpg /tmp/xanmod.key
-  GPG_OUT="/etc/apt/trusted.gpg.d/xanmod-archive.gpg"
-  key_ok=false
-  KEY_URLS=(
-    "https://dl.xanmod.org/archive.key"
-    "https://dl.xanmod.org/gpg.key"
-    "https://gitlab.com/xanmod/linux/-/raw/main/keys/signing.key"
-  )
-  for url in "${KEY_URLS[@]}"; do
-    if curl -fsSL -A "Mozilla/5.0" --max-time 10 "$url" -o /tmp/xanmod.key 2>/dev/null && [[ -s /tmp/xanmod.key ]]; then
-      if gpg --yes --dearmor -o "$GPG_OUT" < /tmp/xanmod.key 2>/dev/null; then
-        key_ok=true; ok "GPG ключ получен: $url"; break
-      fi
-    fi
-  done
-  rm -f /tmp/xanmod.key
-  [[ "$key_ok" != "true" ]] && die "Не удалось скачать GPG ключ XanMod ни из одного источника"
-  echo "deb [signed-by=/etc/apt/trusted.gpg.d/xanmod-archive.gpg] http://deb.xanmod.org releases main" \
+  # Установка GPG ключа XanMod (официальный метод: https://xraycore.org/en/misc/xanmod)
+  apt-get install -y -qq gnupg wget
+  wget -qO - https://gitlab.com/afrd.gpg | gpg --yes --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg
+  echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' \
     > /etc/apt/sources.list.d/xanmod-release.list
   apt-get update -qq
 
