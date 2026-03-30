@@ -1,0 +1,40 @@
+# SSL сертификаты (приватные ключи!)
+nginx/ssl/vinnypuxtomoon/*.pem
+nginx/ssl/wl-ws/*.pem
+
+# xray конфиги (приватные ключи, пароли, IP серверов)
+configs/
+
+# Cert renewal (содержит Cloudflare API токен)
+renew-cert.sh
+
+# Шпаргалки (не нужны для установки)
+check-node.txt
+def-node.txt
+
+# Документация (не нужна для установки)
+docs/
+
+# CLAUDE.md (внутренняя документация)
+CLAUDE.md
+
+# Node modules
+landing/node_modules/
+landing/dist/
+
+# Логи
+*.log
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+*.env
+
+# State files from old setup
+/var/

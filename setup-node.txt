@@ -1,0 +1,85 @@
+═══════════════════════════════════════════════
+  VINNYPUX — Быстрый старт
+═══════════════════════════════════════════════
+
+1. Создай ноду в панели Remnawave → Nodes → скопируй SECRET_KEY
+2. Запусти одну команду на новом сервере:
+
+───────────────────────────────────────────────
+ Установка с GitHub (одна команда)
+───────────────────────────────────────────────
+
+# Selfsteal + Bridge нода
+bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
+  --secret-key "SECRET_KEY_ИЗ_ПАНЕЛИ" \
+  --with-bridges
+
+# WL нода (CDN-схема)
+bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
+  --secret-key "SECRET_KEY_ИЗ_ПАНЕЛИ" \
+  --with-wl
+
+# Минимальная нода (только Reality)
+bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
+  --secret-key "SECRET_KEY_ИЗ_ПАНЕЛИ"
+
+# Дополнительные флаги:
+#   --no-update          пропустить apt upgrade
+#   --ssh-port 2222      если SSH на нестандартном порту
+
+───────────────────────────────────────────────
+ Что делает скрипт
+───────────────────────────────────────────────
+
+1. apt update + upgrade (+ ребут если нужен)
+2. Ставит XanMod ядро с BBR3 (+ ребут)
+3. Оптимизирует сеть (sysctl, conntrack, ulimits, fq qdisc)
+4. Настраивает UFW (SSH, 443, 2222, 9100 + доп. порты)
+5. Ставит Docker, remnanode, node-exporter
+6. Клонирует репу с GitHub → собирает nginx + лендинг
+
+После ребута просто запусти ту же команду повторно —
+скрипт пропустит уже выполненные шаги.
+
+───────────────────────────────────────────────
+ Сертификаты
+───────────────────────────────────────────────
+
+# Wildcard (selfsteal-ноды)
+bash /opt/vinnypux-node/renew-cert.sh issue
+
+# Принудительное обновление
+bash /opt/vinnypux-node/renew-cert.sh install
+
+# Self-signed (WL-ноды, CDN → origin HTTPS)
+IP=$(curl -s ifconfig.me)
+mkdir -p /opt/vinnypux-node/nginx/ssl/wl-ws
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /opt/vinnypux-node/nginx/ssl/wl-ws/key.pem \
+  -out    /opt/vinnypux-node/nginx/ssl/wl-ws/cert.pem \
+  -subj "/CN=$IP" -addext "subjectAltName=IP:$IP"
+
+───────────────────────────────────────────────
+ Пересборка nginx после изменений
+───────────────────────────────────────────────
+
+cd /opt/vinnypux-node && docker compose down && docker compose up -d --build
+
+# Или без даунтайма (только nginx reload):
+docker compose exec nginx nginx -s reload
+
+───────────────────────────────────────────────
+ Проверка ноды
+───────────────────────────────────────────────
+
+# Speedtest
+wget -qO- bench.sh | bash
+
+# IP quality
+bash <(curl -sL https://raw.githubusercontent.com/jomertix/server-scripts/refs/heads/master/checkers/ip_quality.sh)
+
+# Доступность медиа-сервисов
+bash <(curl -sL https://raw.githubusercontent.com/jomertix/server-scripts/refs/heads/master/checkers/service_availability.sh)
+
+# DPI блокировки (для RU серверов)
+bash <(wget -qO- https://github.com/vernette/censorcheck/raw/master/censorcheck.sh) --mode dpi
