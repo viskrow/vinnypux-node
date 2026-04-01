@@ -21,6 +21,9 @@ REPO_URL="https://github.com/viskrow/vinnypux-node.git"
 INSTALL_DIR="/opt/vinnypux-node"
 NODE_PORT="2222"
 NODE_EXPORTER_PORT="9100"
+STATE_FILE="/var/lib/node-setup/state.env"
+RESUME_SERVICE="node-setup-resume"
+SCRIPT_PATH="/usr/local/sbin/node-setup.sh"
 
 # ─── Цвета ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -40,12 +43,75 @@ header() {
 # ─── Проверка root ────────────────────────────────────────────────────────────
 [[ $EUID -ne 0 ]] && die "Запустите от root: sudo bash $0"
 
+# ─── Resume: сохранение/восстановление параметров через ребут ─────────────────
+save_state() {
+  mkdir -p "$(dirname "$STATE_FILE")"
+  cat > "$STATE_FILE" << EOF
+SECRET_KEY=$(printf '%q' "$SECRET_KEY")
+SSH_PORT=$(printf '%q' "$SSH_PORT")
+SKIP_UPDATE=$(printf '%q' "$SKIP_UPDATE")
+WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
+WITH_WL=$(printf '%q' "$WITH_WL")
+EOF
+  chmod 600 "$STATE_FILE"
+}
+
+install_resume_service() {
+  # Копируем скрипт в постоянное место
+  cp "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || realpath "$0")" "$SCRIPT_PATH" 2>/dev/null || true
+  chmod +x "$SCRIPT_PATH"
+  cat > "/etc/systemd/system/${RESUME_SERVICE}.service" << EOF
+[Unit]
+Description=Node Setup — resume after reboot
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$SCRIPT_PATH
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable "${RESUME_SERVICE}.service" > /dev/null 2>&1
+}
+
+remove_resume_service() {
+  systemctl disable "${RESUME_SERVICE}.service" > /dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/${RESUME_SERVICE}.service"
+  rm -f "$STATE_FILE" "$SCRIPT_PATH"
+  systemctl daemon-reload 2>/dev/null || true
+}
+
+do_reboot() {
+  save_state
+  install_resume_service
+  echo ""
+  warn "═══════════════════════════════════════════════════"
+  warn "  $1"
+  warn "  Скрипт автоматически продолжится после ребута."
+  warn "═══════════════════════════════════════════════════"
+  sleep 3
+  reboot
+  exit 0
+}
+
 # ─── Параметры ────────────────────────────────────────────────────────────────
 SECRET_KEY=""
 SSH_PORT="22"
 SKIP_UPDATE="false"
 WITH_BRIDGES="false"
 WITH_WL="false"
+
+# Загружаем сохранённое состояние (resume после ребута)
+if [[ -f "$STATE_FILE" ]]; then
+  # shellcheck source=/dev/null
+  source "$STATE_FILE"
+  info "Продолжаем после ребута..."
+fi
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -58,7 +124,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Интерактивный ввод SECRET_KEY если не передан
+# Интерактивный ввод SECRET_KEY если не передан и нет state-файла
 if [[ -z "$SECRET_KEY" ]]; then
   echo ""
   echo -e "  ${BOLD}Откуда взять SECRET_KEY:${NC}"
@@ -98,10 +164,7 @@ else
 fi
 
 if [[ -f /var/run/reboot-required ]]; then
-  warn "Требуется ребут после обновления ядра."
-  warn "После ребута запусти скрипт повторно — он продолжит с того места где остановился."
-  reboot
-  exit 0
+  do_reboot "Требуется ребут после обновления ядра."
 fi
 
 # =============================================================================
@@ -140,11 +203,12 @@ else
   [[ -z "$XANMOD_PKG" ]] && die "Не найден пакет XanMod"
 
   apt-get install -y "$XANMOD_PKG"
-  ok "$XANMOD_PKG установлен — нужен ребут"
-  warn "После ребута запусти скрипт повторно."
-  reboot
-  exit 0
+  ok "$XANMOD_PKG установлен"
+  do_reboot "XanMod установлен — нужен ребут для нового ядра."
 fi
+
+# Ребуты позади — убираем resume сервис
+remove_resume_service
 
 # =============================================================================
 # 3. Сетевая оптимизация (BBR3 + sysctl + ulimits)
