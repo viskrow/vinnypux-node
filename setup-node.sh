@@ -156,10 +156,10 @@ if [[ "$SKIP_UPDATE" == "true" ]]; then
   warn "Пропущено (--no-update)"
 else
   info "apt update + upgrade..."
-  apt-get update -qq
+  apt-get update -qq > /dev/null 2>&1
   DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq \
     -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold"
+    -o Dpkg::Options::="--force-confold" > /dev/null 2>&1
   ok "Система обновлена"
 fi
 
@@ -188,11 +188,11 @@ else
   info "CPU: $CPU_LEVEL"
 
   # Установка GPG ключа XanMod (официальный метод: https://xraycore.org/en/misc/xanmod)
-  apt-get install -y -qq gnupg wget
-  wget -qO - https://gitlab.com/afrd.gpg | gpg --yes --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg
+  apt-get install -y -qq gnupg wget > /dev/null 2>&1
+  wget -qO - https://gitlab.com/afrd.gpg | gpg --yes --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null
   echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' \
     > /etc/apt/sources.list.d/xanmod-release.list
-  apt-get update -qq
+  apt-get update -qq > /dev/null 2>&1
 
   XANMOD_PKG=""
   for lvl in "$CPU_LEVEL" x64v3 x64v2 x64v1; do
@@ -202,7 +202,7 @@ else
   done
   [[ -z "$XANMOD_PKG" ]] && die "Не найден пакет XanMod"
 
-  apt-get install -y "$XANMOD_PKG"
+  apt-get install -y "$XANMOD_PKG" > /dev/null 2>&1
   ok "$XANMOD_PKG установлен"
   do_reboot "XanMod установлен — нужен ребут для нового ядра."
 fi
@@ -310,7 +310,7 @@ ok "BBR3 + sysctl + ulimits + fq настроены"
 # =============================================================================
 header "4/6 — Firewall"
 
-command -v ufw &>/dev/null || apt-get install -y -qq ufw
+command -v ufw &>/dev/null || apt-get install -y -qq ufw > /dev/null 2>&1
 ufw default deny incoming > /dev/null
 ufw default allow outgoing > /dev/null
 ufw allow "$SSH_PORT"/tcp   comment "SSH"          > /dev/null
@@ -342,14 +342,14 @@ if command -v docker &>/dev/null; then
   ok "Docker: $(docker --version | cut -d' ' -f3 | tr -d ',')"
 else
   info "Устанавливаем Docker..."
-  curl -fsSL https://get.docker.com | sh > /dev/null 2>&1
+  curl -fsSL https://get.docker.com 2>/dev/null | sh > /dev/null 2>&1
   systemctl enable --now docker > /dev/null
   ok "Docker установлен"
 fi
 systemctl is-active --quiet docker || systemctl start docker
 
 # Git (нужен для клонирования репы)
-command -v git &>/dev/null || apt-get install -y -qq git
+command -v git &>/dev/null || apt-get install -y -qq git > /dev/null 2>&1
 
 # Remnanode
 if docker ps --format '{{.Names}}' | grep -q "^remnanode$"; then
@@ -426,7 +426,7 @@ else
 fi
 
 # Logrotate (ежечасно через cron, size 100M)
-command -v logrotate &>/dev/null || apt-get install -y -qq logrotate
+command -v logrotate &>/dev/null || apt-get install -y -qq logrotate > /dev/null 2>&1
 cat > /etc/logrotate.d/remnanode << 'LOGROTATE'
 /var/log/remnanode/*.log {
     size 100M
