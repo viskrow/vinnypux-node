@@ -22,6 +22,7 @@ set -euo pipefail
 
 # ─── Константы ────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/viskrow/vinnypux-node.git"
+SCRIPT_URL="https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh"
 INSTALL_DIR="/opt/vinnypux-node"
 NODE_PORT="2222"
 NODE_EXPORTER_PORT="9100"
@@ -61,8 +62,24 @@ EOF
 }
 
 install_resume_service() {
-  # Копируем скрипт в постоянное место
-  cp "$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || realpath "$0")" "$SCRIPT_PATH" 2>/dev/null || true
+  # Сохраняем скрипт в $SCRIPT_PATH для systemd resume-сервиса.
+  # При запуске через `bash <(curl ...)` локального файла нет (BASH_SOURCE=/dev/fd/63),
+  # поэтому качаем свежую копию с GitHub. При обычном запуске копируем локальный файл.
+  local src=""
+  src=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || realpath "$0" 2>/dev/null || echo "")
+
+  if [[ -n "$src" ]] && [[ -f "$src" ]] && [[ -s "$src" ]] \
+     && [[ "$src" != /dev/fd/* ]] && [[ "$src" != /proc/*/fd/* ]]; then
+    cp "$src" "$SCRIPT_PATH"
+  elif curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null && [[ -s "$SCRIPT_PATH" ]]; then
+    :  # успешно скачали
+  else
+    warn "Не удалось сохранить скрипт для resume-сервиса ($SCRIPT_PATH)."
+    warn "После ребута запусти установку повторно вручную:"
+    warn "  bash <(curl -fsSL $SCRIPT_URL) --with-wl"
+    return 0
+  fi
+
   chmod +x "$SCRIPT_PATH"
   cat > "/etc/systemd/system/${RESUME_SERVICE}.service" << EOF
 [Unit]
