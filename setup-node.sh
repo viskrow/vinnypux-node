@@ -9,7 +9,11 @@
 # Флаги:
 #   --secret-key "..."   SECRET_KEY ноды (обязательный, из панели Remnawave)
 #   --with-bridges       открыть порты 7443-7447 для мостов RU→Foreign
-#   --with-wl            открыть порты 80, 2083, 2085 для WL-схемы (CDN)
+#   --with-wl            WL-схема под CDN:
+#                          • UFW: открывает 80, 2083, 2085
+#                          • docker-compose: публикует :443 наружу
+#                          • nginx.conf: раскомментирует TLS в wl-блоках
+#                          • ssl/wl-ws: генерирует self-signed серт на IP
 #   --no-update          пропустить apt upgrade
 #   --ssh-port 2222      если SSH на нестандартном порту
 # =============================================================================
@@ -97,6 +101,44 @@ do_reboot() {
   sleep 3
   reboot
   exit 0
+}
+
+# ─── WL-патчер: публикация :443 + раскомментирование TLS в wl-блоках ─────────
+# Вызывается в фазе 6 ПОСЛЕ git pull (который откатывает локальные правки).
+# Все операции идемпотентны — безопасно запускать повторно.
+apply_wl_patches() {
+  info "Применяем WL-патчи к docker-compose.yml и nginx.conf..."
+
+  # 1. Публикация порта 443 наружу (для TLS от CDN)
+  if ! grep -q '0.0.0.0:443:443' docker-compose.yml; then
+    sed -i '/- "80:80"/a\      - "0.0.0.0:443:443"        # TLS: WL-ноды через CDN' \
+      docker-compose.yml
+    ok "docker-compose.yml: добавлен публичный :443"
+  else
+    ok "docker-compose.yml: :443 уже опубликован"
+  fi
+
+  # 2. Раскомментирование TLS во всех wl-блоках nginx (uno/wl1/wl2/cdn-2/...)
+  sed -i -E 's|^(\s+)# (listen 443 ssl;)|\1\2|' nginx/nginx.conf
+  sed -i -E 's|^(\s+)# (ssl_certificate\s+/etc/nginx/ssl/wl-ws/cert\.pem;)|\1\2|' nginx/nginx.conf
+  sed -i -E 's|^(\s+)# (ssl_certificate_key /etc/nginx/ssl/wl-ws/key\.pem;)|\1\2|' nginx/nginx.conf
+  ok "nginx.conf: TLS раскомментирован в WL-блоках"
+
+  # 3. Self-signed серт для wl-ws (привязан к IP — генерируется per-node)
+  mkdir -p nginx/ssl/wl-ws
+  if [[ ! -s nginx/ssl/wl-ws/cert.pem ]] || [[ ! -s nginx/ssl/wl-ws/key.pem ]]; then
+    info "Генерируем self-signed серт wl-ws для IP $SERVER_IP..."
+    command -v openssl &>/dev/null || apt-get install -y -qq openssl > /dev/null 2>&1
+    openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+      -keyout nginx/ssl/wl-ws/key.pem \
+      -out    nginx/ssl/wl-ws/cert.pem \
+      -subj   "/CN=$SERVER_IP" \
+      -addext "subjectAltName=IP:$SERVER_IP" > /dev/null 2>&1
+    chmod 600 nginx/ssl/wl-ws/key.pem
+    ok "wl-ws серт сгенерирован (CN=$SERVER_IP)"
+  else
+    ok "wl-ws серт уже существует — пропускаем генерацию"
+  fi
 }
 
 # ─── Параметры ────────────────────────────────────────────────────────────────
@@ -464,6 +506,8 @@ header "6/6 — Nginx + лендинг"
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   info "Обновляем репозиторий..."
+  # Откатываем локальные правки (патчи от прошлого --with-wl) перед pull
+  git -C "$INSTALL_DIR" checkout -- docker-compose.yml nginx/nginx.conf 2>/dev/null || true
   git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
   ok "Репозиторий обновлён"
 else
@@ -477,8 +521,14 @@ else
   ok "Репозиторий склонирован в $INSTALL_DIR"
 fi
 
-info "Собираем и запускаем nginx..."
 cd "$INSTALL_DIR"
+
+# Применяем WL-патчи ПОСЛЕ pull, ДО сборки контейнера
+if [[ "$WITH_WL" == "true" ]]; then
+  apply_wl_patches
+fi
+
+info "Собираем и запускаем nginx..."
 docker compose down 2>/dev/null || true
 docker compose up -d --build
 
