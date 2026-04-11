@@ -14,6 +14,12 @@
 #                          • docker-compose: публикует :443 наружу
 #                          • nginx.conf: раскомментирует TLS в wl-блоках
 #                          • ssl/wl-ws: генерирует self-signed серт на IP
+#   --cf-token "xxx"     Cloudflare API token для выпуска wildcard cert
+#                          *.vinnypuxtomoon.today через acme.sh + DNS-01.
+#                          Опционально (для selfsteal/bridge нод).
+#                          Альтернатива: env CF_Token=xxx bash setup-node.sh ...
+#                          Без флага — placeholder cert (nginx стартует, но
+#                          реальные клиенты на *.vinnypuxtomoon.today не пойдут).
 #   --no-update          пропустить apt upgrade
 #   --ssh-port 2222      если SSH на нестандартном порту
 # =============================================================================
@@ -72,6 +78,7 @@ SSH_PORT=$(printf '%q' "$SSH_PORT")
 SKIP_UPDATE=$(printf '%q' "$SKIP_UPDATE")
 WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
 WITH_WL=$(printf '%q' "$WITH_WL")
+CF_Token=$(printf '%q' "$CF_Token")
 EOF
   chmod 600 "$STATE_FILE"
 }
@@ -180,8 +187,86 @@ wait_container_running() {
   return 1
 }
 
+# ─── Wildcard cert через acme.sh + Cloudflare DNS-01 ────────────────────────
+# Вызывается из ensure_vinnypuxtomoon_cert когда $CF_Token задан.
+# Идемпотентно: если cert свежий — acme.sh ничего не делает.
+issue_wildcard_acme() {
+  local domain="vinnypuxtomoon.today"
+  local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
+  local acme="/root/.acme.sh/acme.sh"
+
+  info "Выпуск wildcard cert для *.$domain (acme.sh + Cloudflare DNS-01)..."
+
+  # Установка acme.sh если ещё нет (вместе с daily cron на renewal)
+  if [[ ! -x "$acme" ]]; then
+    info "Устанавливаем acme.sh..."
+    curl -fsSL https://get.acme.sh | sh -s email="admin@$domain" > /dev/null 2>&1 \
+      || die "Не удалось установить acme.sh"
+  fi
+
+  # Default CA → Let's Encrypt
+  "$acme" --set-default-ca --server letsencrypt > /dev/null 2>&1 || true
+
+  # Issue (использует Cloudflare DNS-01 plugin dns_cf через CF_Token env)
+  if CF_Token="$CF_Token" "$acme" --issue --dns dns_cf \
+       -d "$domain" -d "*.$domain" --keylength 2048 \
+       > /tmp/acme-issue.log 2>&1; then
+    ok "Cert выпущен через Let's Encrypt"
+  elif grep -q -E 'Domains not changed|Skip, Next renewal' /tmp/acme-issue.log; then
+    ok "Cert уже валиден — обновление не требуется"
+  else
+    warn "acme.sh issue провалился:"
+    tail -20 /tmp/acme-issue.log
+    rm -f /tmp/acme-issue.log
+    die "Не удалось выпустить cert через DNS-01 (проверь --cf-token)"
+  fi
+  rm -f /tmp/acme-issue.log
+
+  # Деплой в nginx ssl + регистрация reload-hook для будущих автообновлений
+  mkdir -p "$cert_dir"
+  "$acme" --install-cert -d "$domain" \
+    --key-file       "$cert_dir/key.pem" \
+    --fullchain-file "$cert_dir/cert.pem" \
+    --reloadcmd      "docker exec \$(docker ps -qf name=nginx | head -1) nginx -s reload 2>/dev/null || true" \
+    > /dev/null 2>&1
+  chmod 600 "$cert_dir/key.pem"
+
+  ok "Cert установлен в $cert_dir"
+  ok "Renewal: acme.sh cron проверяет ежедневно, обновляет за 30 дней до expiry"
+}
+
+# ─── Гарантирует наличие vinnypuxtomoon cert (нужен http-уровню nginx.conf) ──
+# 3 пути:
+#   1. CF_Token задан → реальный wildcard через acme.sh
+#   2. Cert уже есть на ноде → не трогаем
+#   3. Ничего нет → placeholder (nginx стартует, real клиенты не пойдут)
+ensure_vinnypuxtomoon_cert() {
+  local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
+  mkdir -p "$cert_dir"
+
+  if [[ -n "$CF_Token" ]]; then
+    issue_wildcard_acme
+    return 0
+  fi
+
+  if [[ -s "$cert_dir/cert.pem" ]] && [[ -s "$cert_dir/key.pem" ]]; then
+    ok "vinnypuxtomoon cert уже на месте — не трогаем"
+    return 0
+  fi
+
+  warn "vinnypuxtomoon cert отсутствует и --cf-token не передан → ставим placeholder"
+  warn "  для реального cert: запусти повторно с --cf-token \"\$CF_Token\""
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout "$cert_dir/key.pem" \
+    -out    "$cert_dir/cert.pem" \
+    -subj   "/CN=placeholder" \
+    -addext "subjectAltName=DNS:vinnypuxtomoon.today,DNS:*.vinnypuxtomoon.today" > /dev/null 2>&1
+  chmod 600 "$cert_dir/key.pem"
+  ok "Placeholder cert сгенерирован"
+}
+
 # ─── WL-патчер: публикация :443 + раскомментирование TLS в wl-блоках ─────────
-# Вызывается в фазе 6 ПОСЛЕ git pull (который откатывает локальные правки).
+# Вызывается в фазе 5 ПОСЛЕ git pull (который откатывает локальные правки).
 # Все операции идемпотентны — безопасно запускать повторно.
 apply_wl_patches() {
   info "Применяем WL-патчи к docker-compose.yml и nginx.conf..."
@@ -205,7 +290,6 @@ apply_wl_patches() {
   mkdir -p nginx/ssl/wl-ws
   if [[ ! -s nginx/ssl/wl-ws/cert.pem ]] || [[ ! -s nginx/ssl/wl-ws/key.pem ]]; then
     info "Генерируем self-signed серт wl-ws для IP $SERVER_IP..."
-    command -v openssl &>/dev/null || apt-get install -y -qq openssl > /dev/null 2>&1
     openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
       -keyout nginx/ssl/wl-ws/key.pem \
       -out    nginx/ssl/wl-ws/cert.pem \
@@ -216,6 +300,7 @@ apply_wl_patches() {
   else
     ok "wl-ws серт уже существует — пропускаем генерацию"
   fi
+  # vinnypuxtomoon cert обрабатывается отдельной функцией ensure_vinnypuxtomoon_cert
 }
 
 # ─── Параметры ────────────────────────────────────────────────────────────────
@@ -224,6 +309,7 @@ SSH_PORT="22"
 SKIP_UPDATE="false"
 WITH_BRIDGES="false"
 WITH_WL="false"
+CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
 PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
 
 # Загружаем сохранённое состояние (resume после ребута)
@@ -240,6 +326,7 @@ while [[ $# -gt 0 ]]; do
     --no-update)      SKIP_UPDATE="true"; shift ;;
     --with-bridges)   WITH_BRIDGES="true"; shift ;;
     --with-wl)        WITH_WL="true";     shift ;;
+    --cf-token)       CF_Token="$2";      shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
   esac
 done
@@ -622,7 +709,10 @@ fi
 
 cd "$INSTALL_DIR"
 
-# Применяем WL-патчи ПОСЛЕ pull, ДО сборки контейнера
+# 1. Гарантируем наличие vinnypuxtomoon cert (реальный wildcard или placeholder)
+ensure_vinnypuxtomoon_cert
+
+# 2. Применяем WL-патчи (если --with-wl) ПОСЛЕ cert и ДО сборки контейнера
 if [[ "$WITH_WL" == "true" ]]; then
   apply_wl_patches
 fi
