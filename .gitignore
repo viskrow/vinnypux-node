@@ -1,43 +1,51 @@
-# SSL
+# ─── Секреты (сертификаты, ключи, токены) ────────────────────────────────
 nginx/ssl/vinnypuxtomoon/*.pem
 nginx/ssl/wl-ws/*.pem
-
-# xray
-configs/
-
-# Cert renewal
-renew-cert.sh
-
-# Hint
-check-node.txt
-def-node.txt
-
-# Документация
-docs/
-
-# CLAUDE.md
-CLAUDE.md
-
-# Node modules
-landing/node_modules/
-landing/dist/
-
-# Логи
-*.log
-
-# Claude Code
-.claude/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Env
 .env
 *.env
+.acme.sh/
 
-# State files from old setup
+# ─── Локальные конфиги (содержат UUID/SECRET_KEY, не для git) ────────────
+configs/
+renew-cert.sh
+
+# ─── Локальная документация и шпаргалки ─────────────────────────────────
+docs/
+CLAUDE.md
+*.txt
+
+# ─── Build artifacts ──────────────────────────────────────────────────────
+landing/node_modules/
+landing/dist/
+node_modules/
+dist/
+
+# ─── Логи и runtime state ─────────────────────────────────────────────────
+*.log
 /var/
 
+# ─── Backup-папки (setup-node.sh пересоздаёт INSTALL_DIR через .bak.timestamp) ──
+*.bak
+*.bak.*
+*.backup
 
-*.txt
+# ─── Старые / временные папки разработки ─────────────────────────────────
+wl/
+tmp/
+.tmp/
+
+# ─── IDE и редакторы ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── Claude Code ──────────────────────────────────────────────────────────
+.claude/
+memory/
+
+# ─── OS ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+._*

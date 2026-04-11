@@ -13,7 +13,7 @@
   git config --global user.email "161084625+viskrow@users.noreply.github.com"
 
 Функция gcp (add + commit + push) уже в ~/.bashrc:
-  gcp "Update 4"
+  gcp "Update 5"
 
 ───────────────────────────────────────────────
  Установка ноды
@@ -26,21 +26,44 @@
  Установка с GitHub (одна команда)
 ───────────────────────────────────────────────
 
-# Selfsteal + Bridge нода
-bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
+# Selfsteal + Bridge нода (с реальным wildcard cert)
+CF_Token="cf_xxxxx" bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
   --with-bridges
 
-# WL нода (CDN-схема)
+# WL нода (CDN-схема, реальный wildcard cert не нужен)
 bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
   --with-wl
 
-# Минимальная нода (только Reality)
-bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
+# Минимальная Reality-нода (с wildcard cert через Cloudflare)
+CF_Token="cf_xxxxx" bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
   --secret-key "SECRET_KEY_ИЗ_ПАНЕЛИ"
 
 # Дополнительные флаги:
+#   --cf-token "..."     Cloudflare API token для wildcard cert (или ENV CF_Token)
+#                          Без него — placeholder cert (real клиенты не пойдут)
 #   --no-update          пропустить apt upgrade
 #   --ssh-port 2222      если SSH на нестандартном порту
+
+───────────────────────────────────────────────
+ Cloudflare API token для wildcard cert
+───────────────────────────────────────────────
+
+1. https://dash.cloudflare.com/profile/api-tokens → "Create Token"
+2. Шаблон: "Edit zone DNS"
+3. Permissions: Zone → DNS → Edit
+4. Zone Resources: Include → Specific zone → vinnypuxtomoon.today
+5. Continue → Create
+6. Скопируй token (показывается ОДИН раз) — это твой $CF_Token
+
+acme.sh внутри ноды:
+  • Использует token для DNS-01 challenge (без портов открытых)
+  • Выпускает cert на vinnypuxtomoon.today + *.vinnypuxtomoon.today
+  • Cron ежедневно проверяет, обновляет за 30 дней до expiry
+  • После обновления автоматически делает nginx -s reload
+
+Если token утечёт — отозви в Cloudflare UI, выпусти новый.
+Scope ограничен только DNS-зоной vinnypuxtomoon.today: атакующий
+не получит доступ к остальной CF-инфраструктуре.
 
 ───────────────────────────────────────────────
  Что делает скрипт (5 фаз, до 1 ребута)
