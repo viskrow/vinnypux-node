@@ -2,6 +2,23 @@
   VINNYPUX — Быстрый старт
 ═══════════════════════════════════════════════
 
+───────────────────────────────────────────────
+ Dev: пуш изменений в GitHub одной командой
+───────────────────────────────────────────────
+
+Разово (на dev-машине):
+  gh auth login                    # выбрать HTTPS + paste PAT
+  gh auth setup-git                # gh становится credential helper
+  git config --global user.name  "viskrow"
+  git config --global user.email "161084625+viskrow@users.noreply.github.com"
+
+Функция gcp (add + commit + push) уже в ~/.bashrc:
+  gcp "Update 4"
+
+───────────────────────────────────────────────
+ Установка ноды
+───────────────────────────────────────────────
+
 1. Создай ноду в панели Remnawave → Nodes → скопируй SECRET_KEY
 2. Запусти одну команду на новом сервере:
 
@@ -11,12 +28,10 @@
 
 # Selfsteal + Bridge нода
 bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
-  --secret-key "SECRET_KEY_ИЗ_ПАНЕЛИ" \
   --with-bridges
 
 # WL нода (CDN-схема)
 bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh) \
-  --secret-key "SECRET_KEY_ИЗ_ПАНЕЛИ" \
   --with-wl
 
 # Минимальная нода (только Reality)
@@ -28,18 +43,45 @@ bash <(curl -fsSL https://raw.githubusercontent.com/viskrow/vinnypux-node/main/s
 #   --ssh-port 2222      если SSH на нестандартном порту
 
 ───────────────────────────────────────────────
- Что делает скрипт
+ Что делает скрипт (5 фаз, до 1 ребута)
 ───────────────────────────────────────────────
 
-1. apt update + upgrade (+ ребут если нужен)
-2. Ставит XanMod ядро с BBR3 (+ ребут)
-3. Оптимизирует сеть (sysctl, conntrack, ulimits, fq qdisc)
-4. Настраивает UFW (SSH, 443, 2222, 9100 + доп. порты)
-5. Ставит Docker, remnanode, node-exporter
-6. Клонирует репу с GitHub → собирает nginx + лендинг
+1. Пакеты + обновление + ядро:
+     apt install (gnupg, wget, curl, ufw, logrotate, git, openssl)
+     apt upgrade
+     XanMod (только если ядро < 6.12 и нет BBR3)
+     ──► ОДИН ребут (если apt обновил ядро ИЛИ установлен XanMod)
+2. Сетевая оптимизация (sysctl BBR3, conntrack, ulimits, fq qdisc)
+3. Firewall (UFW: SSH, 443, 2222, 9100 + доп. порты по флагам)
+4. Docker + контейнеры (параллельный pull, remnanode, node-exporter)
+5. Клонирует репу с GitHub → собирает nginx + лендинг
 
-После ребута просто запусти ту же команду повторно —
-скрипт пропустит уже выполненные шаги.
+С флагом --with-wl дополнительно в фазе 5:
+  • UFW: открывает 80, 2083, 2085
+  • docker-compose.yml: публикует :443 наружу
+  • nginx.conf: раскомментирует TLS в WL-блоках
+  • nginx/ssl/wl-ws: генерирует self-signed серт на IP ноды
+
+На свежих дистрах (Ubuntu 25.04+, Debian 13+, kernel ≥ 6.12)
+XanMod не ставится → 0 ребутов, установка ~2 мин.
+
+После ребута systemd-сервис автоматически продолжит установку.
+Если не сработал — просто запусти ту же команду повторно.
+
+───────────────────────────────────────────────
+ Логи установки
+───────────────────────────────────────────────
+
+# Полный лог (включая до и после ребута)
+less /var/lib/node-setup/setup.log
+tail -f /var/lib/node-setup/setup.log
+
+# Логи resume-сервиса (только пост-ребут шаги)
+journalctl -u node-setup-resume -e --no-pager
+journalctl -u node-setup-resume -f
+
+# Где скрипт остановился перед ребутом
+cat /var/lib/node-setup/state.env
 
 ───────────────────────────────────────────────
  Сертификаты
@@ -51,13 +93,14 @@ bash /opt/vinnypux-node/renew-cert.sh issue
 # Принудительное обновление
 bash /opt/vinnypux-node/renew-cert.sh install
 
-# Self-signed (WL-ноды, CDN → origin HTTPS)
+# Self-signed для WL-нод генерируется автоматически флагом --with-wl.
+# Ручная регенерация (если сменился IP):
 IP=$(curl -s ifconfig.me)
-mkdir -p /opt/vinnypux-node/nginx/ssl/wl-ws
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   -keyout /opt/vinnypux-node/nginx/ssl/wl-ws/key.pem \
   -out    /opt/vinnypux-node/nginx/ssl/wl-ws/cert.pem \
   -subj "/CN=$IP" -addext "subjectAltName=IP:$IP"
+cd /opt/vinnypux-node && docker compose restart nginx
 
 ───────────────────────────────────────────────
  Пересборка nginx после изменений
