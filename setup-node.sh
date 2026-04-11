@@ -26,9 +26,24 @@ SCRIPT_URL="https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-n
 INSTALL_DIR="/opt/vinnypux-node"
 NODE_PORT="2222"
 NODE_EXPORTER_PORT="9100"
-STATE_FILE="/var/lib/node-setup/state.env"
+STATE_DIR="/var/lib/node-setup"
+STATE_FILE="$STATE_DIR/state.env"
+LOG_FILE="$STATE_DIR/setup.log"
 RESUME_SERVICE="node-setup-resume"
 SCRIPT_PATH="/usr/local/sbin/node-setup.sh"
+
+# ─── Логирование: дублируем весь вывод в $LOG_FILE ───────────────────────────
+# Выполняется до проверки root — чтобы даже ошибка "не root" попала в файл.
+[[ $EUID -eq 0 ]] && mkdir -p "$STATE_DIR" 2>/dev/null && {
+  {
+    echo ""
+    echo "════════════════════════════════════════════════════════════"
+    echo "  setup-node.sh запущен: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  Аргументы: $*"
+    echo "════════════════════════════════════════════════════════════"
+  } >> "$LOG_FILE"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+}
 
 # ─── Цвета ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -70,7 +85,10 @@ install_resume_service() {
 
   if [[ -n "$src" ]] && [[ -f "$src" ]] && [[ -s "$src" ]] \
      && [[ "$src" != /dev/fd/* ]] && [[ "$src" != /proc/*/fd/* ]]; then
-    cp "$src" "$SCRIPT_PATH"
+    # Если скрипт уже запущен из $SCRIPT_PATH (resume после ребута) — cp не нужен
+    if [[ "$src" != "$SCRIPT_PATH" ]] && ! [[ "$src" -ef "$SCRIPT_PATH" ]]; then
+      cp "$src" "$SCRIPT_PATH"
+    fi
   elif curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH" 2>/dev/null && [[ -s "$SCRIPT_PATH" ]]; then
     :  # успешно скачали
   else
@@ -115,9 +133,51 @@ do_reboot() {
   warn "  $1"
   warn "  Скрипт автоматически продолжится после ребута."
   warn "═══════════════════════════════════════════════════"
-  sleep 3
+  echo ""
+  info "Логи установки:       $LOG_FILE"
+  info "Логи после ребута:    journalctl -u $RESUME_SERVICE -f"
+  info "Полный лог одним tail: tail -f $LOG_FILE"
+  echo ""
   reboot
   exit 0
+}
+
+# ─── Детект BBR v3: модуль ИЛИ ядро >= 6.12 (upstream BBRv3) ──────────────────
+detect_bbr3() {
+  local mod_ver
+  mod_ver=$(modinfo tcp_bbr 2>/dev/null | awk '/^version:/{print $2}')
+  [[ "$mod_ver" == "3" ]] && return 0
+  local kver_num
+  kver_num=$(uname -r | awk -F'[.-]' '{printf "%d.%02d\n", $1, $2}')
+  awk -v v="$kver_num" 'BEGIN { exit !(v >= 6.12) }'
+}
+
+# ─── Ждём освобождения apt-lock (unattended-upgrades, etc.) ──────────────────
+wait_apt_lock() {
+  local i=0
+  while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     || fuser /var/lib/dpkg/lock          >/dev/null 2>&1 \
+     || fuser /var/lib/apt/lists/lock     >/dev/null 2>&1; do
+    [[ $i -eq 0 ]] && info "Ждём освобождения apt-lock (другой apt процесс)..."
+    sleep 2
+    i=$((i+1))
+    [[ $i -gt 60 ]] && die "apt-lock не освободился за 2 минуты"
+  done
+}
+
+# ─── Активный polling: ждём пока контейнер реально стартует (вместо sleep) ───
+wait_container_running() {
+  local name=$1
+  local max=${2:-10}
+  local i=0
+  while [[ $i -lt $max ]]; do
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == "true" ]]; then
+      return 0
+    fi
+    sleep 1
+    i=$((i+1))
+  done
+  return 1
 }
 
 # ─── WL-патчер: публикация :443 + раскомментирование TLS в wl-блоках ─────────
@@ -164,6 +224,7 @@ SSH_PORT="22"
 SKIP_UPDATE="false"
 WITH_BRIDGES="false"
 WITH_WL="false"
+PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
 
 # Загружаем сохранённое состояние (resume после ребута)
 if [[ -f "$STATE_FILE" ]]; then
@@ -207,37 +268,39 @@ echo -e "  ${BOLD}IP:${NC} $SERVER_IP"
 echo ""
 
 # =============================================================================
-# 1. Обновление системы
+# 1. Пакеты + обновление системы + ядро (один ребут максимум)
 # =============================================================================
-header "1/6 — Обновление системы"
+header "1/5 — Пакеты + обновление + ядро"
 
+NEED_REBOOT=false
+
+# ── 1.1. Базовые пакеты одним вызовом ────────────────────────────────────────
+wait_apt_lock
+info "Устанавливаем базовые пакеты..."
+apt-get update -qq > /dev/null 2>&1
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+  gnupg wget curl ca-certificates \
+  ufw logrotate git openssl > /dev/null 2>&1
+ok "Базовые пакеты установлены"
+
+# ── 1.2. apt upgrade ─────────────────────────────────────────────────────────
 if [[ "$SKIP_UPDATE" == "true" ]]; then
-  warn "Пропущено (--no-update)"
+  warn "apt upgrade пропущен (--no-update)"
 else
-  info "apt update + upgrade..."
-  apt-get update -qq > /dev/null 2>&1
+  wait_apt_lock
+  info "apt upgrade..."
   DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq \
     -o Dpkg::Options::="--force-confdef" \
     -o Dpkg::Options::="--force-confold" > /dev/null 2>&1
   ok "Система обновлена"
 fi
+[[ -f /var/run/reboot-required ]] && NEED_REBOOT=true
 
-if [[ -f /var/run/reboot-required ]]; then
-  do_reboot "Требуется ребут после обновления ядра."
-fi
-
-# =============================================================================
-# 2. XanMod / BBR3
-# =============================================================================
-header "2/6 — Ядро XanMod / BBR3"
-
-BBR_VER=$(modinfo tcp_bbr 2>/dev/null | awk '/^version:/{print $2}' || echo "1")
-
-if [[ "$BBR_VER" == "3" ]]; then
-  ok "BBR3 уже доступен (ядро: $(uname -r))"
+# ── 1.3. XanMod (если BBR3 ещё не доступен) ──────────────────────────────────
+if detect_bbr3; then
+  ok "BBR3 уже доступен (ядро: $(uname -r)) — XanMod не нужен"
 else
-  info "BBR версия: $BBR_VER (ядро: $(uname -r))"
-  info "Устанавливаем XanMod..."
+  info "BBR3 недоступен (ядро: $(uname -r)) — ставим XanMod..."
 
   # CPU level
   if grep -q "avx512" /proc/cpuinfo; then CPU_LEVEL="x64v4"
@@ -246,13 +309,15 @@ else
   else CPU_LEVEL="x64v1"; fi
   info "CPU: $CPU_LEVEL"
 
-  # Установка GPG ключа XanMod (официальный метод: https://xraycore.org/en/misc/xanmod)
-  apt-get install -y -qq gnupg wget > /dev/null 2>&1
-  wget -qO - https://gitlab.com/afrd.gpg | gpg --yes --dearmor -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null
+  # GPG ключ XanMod (официальный метод: gitlab.com/afrd.gpg)
+  wget -qO - https://gitlab.com/afrd.gpg | gpg --yes --dearmor \
+    -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null
   echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' \
     > /etc/apt/sources.list.d/xanmod-release.list
+  wait_apt_lock
   apt-get update -qq > /dev/null 2>&1
 
+  # Подбираем пакет под CPU-уровень с фолбэком вниз
   XANMOD_PKG=""
   for lvl in "$CPU_LEVEL" x64v3 x64v2 x64v1; do
     XANMOD_PKG=$(apt-cache search "linux-image.*${lvl}.*xanmod" 2>/dev/null \
@@ -261,18 +326,31 @@ else
   done
   [[ -z "$XANMOD_PKG" ]] && die "Не найден пакет XanMod"
 
-  apt-get install -y "$XANMOD_PKG" > /dev/null 2>&1
+  wait_apt_lock
+  apt-get install -y "$XANMOD_PKG" > /dev/null 2>&1 \
+    || die "Установка XanMod провалилась — см. apt лог"
   ok "$XANMOD_PKG установлен"
-  do_reboot "XanMod установлен — нужен ребут для нового ядра."
+  NEED_REBOOT=true
+
+  # GRUB по умолчанию: 0 — самое верхнее в списке.
+  # XanMod (6.19+) обычно > stock (6.8.x) по dpkg-version, поэтому окажется первым.
+  # На всякий случай форсим update-grub.
+  update-grub > /dev/null 2>&1 || true
 fi
 
-# Ребуты позади — убираем resume сервис
+# ── 1.4. Один ребут (если apt upgrade обновил ядро ИЛИ установлен XanMod) ────
+if [[ "$NEED_REBOOT" == "true" ]]; then
+  do_reboot "Нужен ребут для активации нового ядра."
+fi
+
+# Если мы здесь — ребут не нужен (BBR3 уже был, ядро не обновлялось).
+# Resume-сервис мог остаться от предыдущей попытки — чистим.
 remove_resume_service
 
 # =============================================================================
-# 3. Сетевая оптимизация (BBR3 + sysctl + ulimits)
+# 2. Сетевая оптимизация (BBR3 + sysctl + ulimits)
 # =============================================================================
-header "3/6 — Сетевая оптимизация"
+header "2/5 — Сетевая оптимизация"
 
 RAM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 if   [[ "$RAM_MB" -ge 8192 ]]; then BUF=67108864   # 64MB — 8+ GB RAM
@@ -326,21 +404,20 @@ EOF
   sysctl -p /etc/sysctl.d/99-conntrack.conf > /dev/null 2>&1 || true
 fi
 
-# ulimits
-if ! grep -q "1048576" /etc/security/limits.conf 2>/dev/null; then
-  cat >> /etc/security/limits.conf << EOF
+# ulimits — system-wide nofile=1048576 (для всех кроме docker, у docker свой --ulimit)
+cat > /etc/security/limits.d/99-vpn-nofile.conf << 'EOF'
 *    soft nofile 1048576
 *    hard nofile 1048576
 root soft nofile 1048576
 root hard nofile 1048576
 EOF
-fi
-sed -i 's/^#*DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/system.conf
-grep -q "^DefaultLimitNOFILE=1048576" /etc/systemd/system.conf \
-  || echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/system.conf
-sed -i 's/^#*DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/user.conf
-grep -q "^DefaultLimitNOFILE=1048576" /etc/systemd/user.conf \
-  || echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/user.conf
+for cfg in /etc/systemd/system.conf /etc/systemd/user.conf; do
+  if grep -q '^DefaultLimitNOFILE=' "$cfg"; then
+    sed -i 's/^DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' "$cfg"
+  else
+    echo 'DefaultLimitNOFILE=1048576' >> "$cfg"
+  fi
+done
 systemctl daemon-reexec > /dev/null 2>&1 || true
 
 # fq qdisc
@@ -365,11 +442,10 @@ fi
 ok "BBR3 + sysctl + ulimits + fq настроены"
 
 # =============================================================================
-# 4. Firewall (UFW)
+# 3. Firewall (UFW)
 # =============================================================================
-header "4/6 — Firewall"
+header "3/5 — Firewall"
 
-command -v ufw &>/dev/null || apt-get install -y -qq ufw > /dev/null 2>&1
 ufw default deny incoming > /dev/null
 ufw default allow outgoing > /dev/null
 ufw allow "$SSH_PORT"/tcp   comment "SSH"          > /dev/null
@@ -392,9 +468,9 @@ ufw --force enable > /dev/null
 ok "UFW: SSH($SSH_PORT), remnanode($NODE_PORT), HTTPS(443), NodeExporter($NODE_EXPORTER_PORT)"
 
 # =============================================================================
-# 5. Docker + контейнеры
+# 4. Docker + контейнеры
 # =============================================================================
-header "5/6 — Docker + контейнеры"
+header "4/5 — Docker + контейнеры"
 
 # Docker
 if command -v docker &>/dev/null; then
@@ -407,13 +483,21 @@ else
 fi
 systemctl is-active --quiet docker || systemctl start docker
 
-# Git (нужен для клонирования репы)
-command -v git &>/dev/null || apt-get install -y -qq git > /dev/null 2>&1
+# Параллельный pull всех образов в фоне (~15-25с экономии)
+info "Качаем docker-образы в фоне..."
+PULL_PIDS=()
+for img in remnawave/node:latest prom/node-exporter:latest nginx:alpine node:20-alpine; do
+  ( docker pull "$img" > /dev/null 2>&1 || warn "pull $img failed" ) &
+  PULL_PIDS+=($!)
+done
 
 # Remnanode
 if docker ps --format '{{.Names}}' | grep -q "^remnanode$"; then
   ok "remnanode уже запущен"
 else
+  # Ждём только pull remnanode (первый PID), остальные продолжают качаться в фоне
+  wait "${PULL_PIDS[0]}" 2>/dev/null || true
+
   info "Запускаем remnanode..."
   docker rm -f remnanode > /dev/null 2>&1 || true
 
@@ -432,9 +516,8 @@ else
     remnawave/node:latest > /dev/null
 
   rm -f /tmp/remnanode.env
-  sleep 5
 
-  if docker ps --format '{{.Names}}' | grep -q "^remnanode$"; then
+  if wait_container_running remnanode 10; then
     ok "remnanode запущен"
   else
     warn "remnanode не запустился — проверь: docker logs remnanode"
@@ -484,10 +567,10 @@ else
   fi
 fi
 
-# Logrotate (ежечасно через cron, size 100M)
-command -v logrotate &>/dev/null || apt-get install -y -qq logrotate > /dev/null 2>&1
+# Logrotate (раз в сутки штатным cron.daily; size 100M триггерит ротацию раньше)
 cat > /etc/logrotate.d/remnanode << 'LOGROTATE'
 /var/log/remnanode/*.log {
+    daily
     size 100M
     rotate 5
     compress
@@ -496,9 +579,8 @@ cat > /etc/logrotate.d/remnanode << 'LOGROTATE'
     copytruncate
 }
 LOGROTATE
-cat > /etc/cron.d/remnanode-logrotate << 'CRON'
-0 * * * * root /usr/sbin/logrotate -f /etc/logrotate.d/remnanode > /dev/null 2>&1
-CRON
+# /etc/cron.daily/logrotate уже идёт в пакете logrotate — отдельный cron не нужен
+rm -f /etc/cron.d/remnanode-logrotate 2>/dev/null || true
 
 mkdir -p /opt/node-exporter
 cat > /opt/node-exporter/docker-compose.yml << EOF
@@ -517,9 +599,9 @@ services:
 EOF
 
 # =============================================================================
-# 6. Клонирование репы + nginx (docker compose)
+# 5. Клонирование репы + nginx (docker compose)
 # =============================================================================
-header "6/6 — Nginx + лендинг"
+header "5/5 — Nginx + лендинг"
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   info "Обновляем репозиторий..."
@@ -543,6 +625,11 @@ cd "$INSTALL_DIR"
 # Применяем WL-патчи ПОСЛЕ pull, ДО сборки контейнера
 if [[ "$WITH_WL" == "true" ]]; then
   apply_wl_patches
+fi
+
+# Дожидаемся всех фоновых docker pull (если ещё не закончились)
+if [[ ${#PULL_PIDS[@]} -gt 0 ]]; then
+  wait "${PULL_PIDS[@]}" 2>/dev/null || true
 fi
 
 info "Собираем и запускаем nginx..."
@@ -577,4 +664,7 @@ echo ""
 
 echo -e "${BOLD}Порты:${NC}"
 ufw status 2>/dev/null | grep "ALLOW" | awk '{print "  " $0}' || true
+echo ""
+
+echo -e "${BOLD}Логи установки:${NC} $LOG_FILE"
 echo ""

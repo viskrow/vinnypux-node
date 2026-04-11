@@ -38,3 +38,6 @@ Thumbs.db
 
 # State files from old setup
 /var/
+
+
+*.txt
