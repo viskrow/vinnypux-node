@@ -3,9 +3,10 @@ services:
     build:
       context: .
       dockerfile: ./nginx/Dockerfile
+    container_name: wombat
     ports:
-      - "80:80"                  # CDN → origin HTTP (wl-ноды)
-      - "127.0.0.1:9443:443"    # self-steal для xray Reality
+      - "80:80"                  # optional reserve (HTTP origin для CDN-схем)
+      - "127.0.0.1:9443:9443"    # self-steal target для xray Reality (proxy_protocol)
     volumes:
       - ./nginx/ssl:/etc/nginx/ssl:ro
     extra_hosts:
