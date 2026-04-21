@@ -634,19 +634,18 @@ EOF
 printf 'NODE_PORT=%s\nSECRET_KEY=%s\n' "$NODE_PORT" "$SECRET_KEY" > /opt/potato-core/.env
 chmod 600 /opt/potato-core/.env
 
-if docker ps --format '{{.Names}}' | grep -q "^potato$"; then
-  ok "potato уже запущен"
+# Идемпотентно: каждый запуск скрипта пересобирает образ (Dockerfile мог
+# обновиться между запусками), compose сам решает пересоздавать ли контейнер
+# на основе хеша image/config.
+info "Собираем/обновляем образ potato (~30s если изменился Dockerfile)..."
+( cd /opt/potato-core && docker compose build --pull > /dev/null 2>&1 )
+( cd /opt/potato-core && docker compose up -d > /dev/null 2>&1 )
+# Убираем upstream-тег чтобы docker images не показывал remnawave/node
+docker rmi remnawave/node:latest > /dev/null 2>&1 || true
+if wait_container_running potato 15; then
+  ok "potato запущен (obfuscated build)"
 else
-  info "Собираем обфусцированный образ potato (~30s)..."
-  docker rm -f potato > /dev/null 2>&1 || true
-  ( cd /opt/potato-core && docker compose up -d --build > /dev/null 2>&1 )
-  # Убираем upstream-тег чтобы docker images не показывал remnawave/node
-  docker rmi remnawave/node:latest > /dev/null 2>&1 || true
-  if wait_container_running potato 15; then
-    ok "potato запущен (obfuscated build)"
-  else
-    warn "potato не запустился — проверь: docker logs potato"
-  fi
+  warn "potato не запустился — проверь: docker logs potato"
 fi
 
 # ── beeper (metrics, простой retag без патчей) ───────────────────────────────
