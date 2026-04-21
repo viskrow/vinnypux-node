@@ -203,11 +203,27 @@ issue_wildcard_acme() {
 
   info "Выпуск wildcard cert для *.$domain (acme.sh + Cloudflare DNS-01)..."
 
-  # Установка acme.sh если ещё нет (вместе с daily cron на renewal)
+  # Установка acme.sh если ещё нет.
+  # curl|sh installer может "успешно" вернуть exit 0 даже когда git clone провалился
+  # (тихий баг). Поэтому проверяем РЕЗУЛЬТАТ — существование бинаря — и retry.
   if [[ ! -x "$acme" ]]; then
     info "Устанавливаем acme.sh..."
-    curl -fsSL https://get.acme.sh | sh -s email="admin@$domain" > /dev/null 2>&1 \
-      || die "Не удалось установить acme.sh"
+    local attempt
+    for attempt in 1 2 3; do
+      rm -rf /root/.acme.sh
+      curl -fsSL https://get.acme.sh | sh -s email="admin@$domain" >/tmp/acme-install.log 2>&1 || true
+      [[ -x "$acme" ]] && break
+      warn "acme.sh install попытка $attempt провалилась, retry..."
+      sleep 3
+    done
+    if [[ ! -x "$acme" ]]; then
+      warn "Последний лог установки acme.sh:"
+      tail -30 /tmp/acme-install.log 2>/dev/null
+      rm -f /tmp/acme-install.log
+      die "Не удалось установить acme.sh после 3 попыток"
+    fi
+    rm -f /tmp/acme-install.log
+    ok "acme.sh установлен"
   fi
 
   # Default CA → Let's Encrypt
@@ -333,7 +349,7 @@ info "Устанавливаем базовые пакеты..."
 apt-get update -qq > /dev/null 2>&1
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
   gnupg wget curl ca-certificates \
-  ufw logrotate git openssl > /dev/null 2>&1
+  ufw logrotate git openssl socat cron > /dev/null 2>&1
 ok "Базовые пакеты установлены"
 
 # ── 1.2. apt upgrade ─────────────────────────────────────────────────────────
@@ -575,14 +591,11 @@ cat > /opt/potato-core/Dockerfile << 'POTATO_DOCKERFILE'
 FROM remnawave/node:latest
 USER root
 # Переименовать реальный xray binary + удалить симлинк-псевдоним.
-# Пропатчить supervisord, nestjs-код и entrypoint чтобы ссылались на новый путь.
-# Используем простые sed-паттерны (без alternation) — совместимость с busybox sed.
+# Меняем ТОЛЬКО путь к бинарю — program name и log-файлы ВНУТРИ контейнера
+# остаются "xray" (они не видны снаружи через ps aux, ими управляет nestjs XML-RPC).
 RUN mv /usr/local/bin/xray /usr/local/bin/webd && \
     rm -f /usr/local/bin/rw-core && \
     sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' /etc/supervisord.conf && \
-    sed -i 's|\[program:xray\]|[program:webd]|g' /etc/supervisord.conf && \
-    sed -i 's|xray\.err\.log|webd.err.log|g' /etc/supervisord.conf && \
-    sed -i 's|xray\.out\.log|webd.out.log|g' /etc/supervisord.conf && \
     sed -i "s|'/usr/local/bin/xray'|'/usr/local/bin/webd'|g" \
         /opt/app/dist/src/modules/xray-core/xray.service.js && \
     sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' /usr/local/bin/docker-entrypoint.sh && \
