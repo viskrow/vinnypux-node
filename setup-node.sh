@@ -9,11 +9,6 @@
 # Флаги:
 #   --secret-key "..."   SECRET_KEY ноды (обязательный, из панели Remnawave)
 #   --with-bridges       открыть порты 7443-7447 для мостов RU→Foreign
-#   --with-wl            WL-схема под CDN:
-#                          • UFW: открывает 80, 2083, 2085
-#                          • docker-compose: публикует :443 наружу
-#                          • nginx.conf: раскомментирует TLS в wl-блоках
-#                          • ssl/wl-ws: генерирует self-signed серт на IP
 #   --cf-token "xxx"     Cloudflare API token для выпуска wildcard cert
 #                          *.vinnypuxtomoon.today через acme.sh + DNS-01.
 #                          Опционально (для selfsteal/bridge нод).
@@ -29,25 +24,37 @@ set -euo pipefail
 # ─── Константы ────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/viskrow/vinnypux-node.git"
 SCRIPT_URL="https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh"
-INSTALL_DIR="/opt/vinnypux-node"
+INSTALL_DIR="/opt/potato"
 NODE_PORT="2222"
 NODE_EXPORTER_PORT="9100"
-STATE_DIR="/var/lib/node-setup"
+STATE_DIR="/var/lib/sysboot"
 STATE_FILE="$STATE_DIR/state.env"
 LOG_FILE="$STATE_DIR/setup.log"
-RESUME_SERVICE="node-setup-resume"
-SCRIPT_PATH="/usr/local/sbin/node-setup.sh"
+RESUME_SERVICE="sysboot-resume"
+SCRIPT_PATH="/usr/local/sbin/sysboot.sh"
 
 # ─── Логирование: дублируем весь вывод в $LOG_FILE ───────────────────────────
 # Выполняется до проверки root — чтобы даже ошибка "не root" попала в файл.
+# Секретные аргументы (--secret-key / --cf-token) маскируются: в лог идут только
+# флаги без значений. Значения остаются в памяти процесса.
 [[ $EUID -eq 0 ]] && mkdir -p "$STATE_DIR" 2>/dev/null && {
+  _masked_args=""
+  _skip_next=0
+  for _arg in "$@"; do
+    if [[ $_skip_next -eq 1 ]]; then _masked_args+=" ***"; _skip_next=0; continue; fi
+    case "$_arg" in
+      --secret-key|--cf-token) _masked_args+=" $_arg"; _skip_next=1 ;;
+      *) _masked_args+=" $_arg" ;;
+    esac
+  done
   {
     echo ""
     echo "════════════════════════════════════════════════════════════"
-    echo "  setup-node.sh запущен: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "  Аргументы: $*"
+    echo "  Setup запущен: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  Args:$_masked_args"
     echo "════════════════════════════════════════════════════════════"
   } >> "$LOG_FILE"
+  unset _masked_args _skip_next _arg
   exec > >(tee -a "$LOG_FILE") 2>&1
 }
 
@@ -77,7 +84,6 @@ SECRET_KEY=$(printf '%q' "$SECRET_KEY")
 SSH_PORT=$(printf '%q' "$SSH_PORT")
 SKIP_UPDATE=$(printf '%q' "$SKIP_UPDATE")
 WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
-WITH_WL=$(printf '%q' "$WITH_WL")
 CF_Token=$(printf '%q' "$CF_Token")
 EOF
   chmod 600 "$STATE_FILE"
@@ -101,7 +107,7 @@ install_resume_service() {
   else
     warn "Не удалось сохранить скрипт для resume-сервиса ($SCRIPT_PATH)."
     warn "После ребута запусти установку повторно вручную:"
-    warn "  bash <(curl -fsSL $SCRIPT_URL) --with-wl"
+    warn "  bash <(curl -fsSL $SCRIPT_URL) --with-bridges"
     return 0
   fi
 
@@ -227,7 +233,7 @@ issue_wildcard_acme() {
   "$acme" --install-cert -d "$domain" \
     --key-file       "$cert_dir/key.pem" \
     --fullchain-file "$cert_dir/cert.pem" \
-    --reloadcmd      "docker exec \$(docker ps -qf name=nginx | head -1) nginx -s reload 2>/dev/null || true" \
+    --reloadcmd      "docker exec \$(docker ps -qf name=wombat | head -1) nginx -s reload 2>/dev/null || true; docker restart potato >/dev/null 2>&1 || true" \
     > /dev/null 2>&1
   chmod 600 "$cert_dir/key.pem"
 
@@ -265,50 +271,11 @@ ensure_vinnypuxtomoon_cert() {
   ok "Placeholder cert сгенерирован"
 }
 
-# ─── WL-патчер: публикация :443 + раскомментирование TLS в wl-блоках ─────────
-# Вызывается в фазе 5 ПОСЛЕ git pull (который откатывает локальные правки).
-# Все операции идемпотентны — безопасно запускать повторно.
-apply_wl_patches() {
-  info "Применяем WL-патчи к docker-compose.yml и nginx.conf..."
-
-  # 1. Публикация порта 443 наружу (для TLS от CDN)
-  if ! grep -q '0.0.0.0:443:443' docker-compose.yml; then
-    sed -i '/- "80:80"/a\      - "0.0.0.0:443:443"        # TLS: WL-ноды через CDN' \
-      docker-compose.yml
-    ok "docker-compose.yml: добавлен публичный :443"
-  else
-    ok "docker-compose.yml: :443 уже опубликован"
-  fi
-
-  # 2. Раскомментирование TLS во всех wl-блоках nginx (uno/wl1/wl2/cdn-2/...)
-  sed -i -E 's|^(\s+)# (listen 443 ssl;)|\1\2|' nginx/nginx.conf
-  sed -i -E 's|^(\s+)# (ssl_certificate\s+/etc/nginx/ssl/wl-ws/cert\.pem;)|\1\2|' nginx/nginx.conf
-  sed -i -E 's|^(\s+)# (ssl_certificate_key /etc/nginx/ssl/wl-ws/key\.pem;)|\1\2|' nginx/nginx.conf
-  ok "nginx.conf: TLS раскомментирован в WL-блоках"
-
-  # 3. Self-signed серт для wl-ws (привязан к IP — генерируется per-node)
-  mkdir -p nginx/ssl/wl-ws
-  if [[ ! -s nginx/ssl/wl-ws/cert.pem ]] || [[ ! -s nginx/ssl/wl-ws/key.pem ]]; then
-    info "Генерируем self-signed серт wl-ws для IP $SERVER_IP..."
-    openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-      -keyout nginx/ssl/wl-ws/key.pem \
-      -out    nginx/ssl/wl-ws/cert.pem \
-      -subj   "/CN=$SERVER_IP" \
-      -addext "subjectAltName=IP:$SERVER_IP" > /dev/null 2>&1
-    chmod 600 nginx/ssl/wl-ws/key.pem
-    ok "wl-ws серт сгенерирован (CN=$SERVER_IP)"
-  else
-    ok "wl-ws серт уже существует — пропускаем генерацию"
-  fi
-  # vinnypuxtomoon cert обрабатывается отдельной функцией ensure_vinnypuxtomoon_cert
-}
-
 # ─── Параметры ────────────────────────────────────────────────────────────────
 SECRET_KEY=""
 SSH_PORT="22"
 SKIP_UPDATE="false"
 WITH_BRIDGES="false"
-WITH_WL="false"
 CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
 PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
 
@@ -325,7 +292,6 @@ while [[ $# -gt 0 ]]; do
     --ssh-port)       SSH_PORT="$2";      shift 2 ;;
     --no-update)      SKIP_UPDATE="true"; shift ;;
     --with-bridges)   WITH_BRIDGES="true"; shift ;;
-    --with-wl)        WITH_WL="true";     shift ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
   esac
@@ -535,24 +501,20 @@ header "3/5 — Firewall"
 
 ufw default deny incoming > /dev/null
 ufw default allow outgoing > /dev/null
-ufw allow "$SSH_PORT"/tcp   comment "SSH"          > /dev/null
-ufw allow "$NODE_PORT"/tcp  comment "remnanode"     > /dev/null
-ufw allow 443/tcp           comment "HTTPS/Reality" > /dev/null
-ufw allow "$NODE_EXPORTER_PORT"/tcp comment "NodeExporter" > /dev/null
+ufw allow "$SSH_PORT"/tcp   comment "SSH"        > /dev/null
+ufw allow "$NODE_PORT"/tcp  comment "mgmt"       > /dev/null
+ufw allow 443/tcp           comment "HTTPS"      > /dev/null
+ufw allow 443/udp           comment "QUIC"       > /dev/null
+ufw allow 8443/tcp          comment "HTTPS-alt"  > /dev/null
+ufw allow "$NODE_EXPORTER_PORT"/tcp comment "metrics" > /dev/null
 
 if [[ "$WITH_BRIDGES" == "true" ]]; then
-  ufw allow 7443:7447/tcp comment "Bridges" > /dev/null
-  ok "Мосты 7443-7447 открыты"
-fi
-if [[ "$WITH_WL" == "true" ]]; then
-  ufw allow 80/tcp   comment "CDN HTTP (WL)"  > /dev/null
-  ufw allow 2083/tcp comment "xray WS (WL)"   > /dev/null
-  ufw allow 2085/tcp comment "xray XHTTP (WL)" > /dev/null
-  ok "WL порты 80, 2083, 2085 открыты"
+  ufw allow 7443:7447/tcp comment "relay" > /dev/null
+  ok "relay ports 7443-7447 открыты"
 fi
 
 ufw --force enable > /dev/null
-ok "UFW: SSH($SSH_PORT), remnanode($NODE_PORT), HTTPS(443), NodeExporter($NODE_EXPORTER_PORT)"
+ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443 TCP+UDP, 8443, metrics($NODE_EXPORTER_PORT)"
 
 # =============================================================================
 # 4. Docker + контейнеры
@@ -570,55 +532,73 @@ else
 fi
 systemctl is-active --quiet docker || systemctl start docker
 
-# Параллельный pull всех образов в фоне (~15-25с экономии)
-info "Качаем docker-образы в фоне..."
-PULL_PIDS=()
-for img in remnawave/node:latest prom/node-exporter:latest nginx:alpine node:20-alpine; do
-  ( docker pull "$img" > /dev/null 2>&1 || warn "pull $img failed" ) &
-  PULL_PIDS+=($!)
-done
-
-# Remnanode
-if docker ps --format '{{.Names}}' | grep -q "^remnanode$"; then
-  ok "remnanode уже запущен"
-else
-  # Ждём только pull remnanode (первый PID), остальные продолжают качаться в фоне
-  wait "${PULL_PIDS[0]}" 2>/dev/null || true
-
-  info "Запускаем remnanode..."
-  docker rm -f remnanode > /dev/null 2>&1 || true
-
-  printf 'NODE_PORT=%s\nSECRET_KEY=%s\n' "$NODE_PORT" "$SECRET_KEY" > /tmp/remnanode.env
-  chmod 600 /tmp/remnanode.env
-
-  docker run -d \
-    --name remnanode \
-    --hostname remnanode \
-    --network host \
-    --restart always \
-    --cap-add NET_ADMIN \
-    --ulimit nofile=1048576:1048576 \
-    --env-file /tmp/remnanode.env \
-    -v /var/log/remnanode:/var/log/remnanode \
-    remnawave/node:latest > /dev/null
-
-  rm -f /tmp/remnanode.env
-
-  if wait_container_running remnanode 10; then
-    ok "remnanode запущен"
-  else
-    warn "remnanode не запустился — проверь: docker logs remnanode"
-  fi
+# ── Глобальный лимит JSON-логов для всех контейнеров ─────────────────────────
+# Страхует от разрастания /var/lib/docker/containers/*/*-json.log
+# (logrotate их не ротирует — Docker daemon держит fd).
+# Идемпотентно: создаём только если daemon.json отсутствует.
+if [[ ! -f /etc/docker/daemon.json ]]; then
+  info "Настраиваем лимит Docker JSON-логов (50m × 5 на контейнер)..."
+  cat > /etc/docker/daemon.json << 'DOCKERCFG'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "5"
+  }
+}
+DOCKERCFG
+  systemctl restart docker > /dev/null 2>&1 || warn "docker restart failed"
+  ok "Docker log-opts установлены (max 250MB на контейнер)"
 fi
 
-# Сохраняем docker-compose для remnanode (для удобства управления)
-mkdir -p /opt/remnanode
-cat > /opt/remnanode/docker-compose.yml << EOF
+# ── Параллельный pre-pull nginx-related образов (для фазы 5) ─────────────────
+info "Качаем docker-образы в фоне..."
+PULL_PIDS=()
+( docker pull nginx:alpine    > /dev/null 2>&1 || warn "pull nginx failed" )    &
+PULL_PIDS+=($!)
+( docker pull node:20-alpine  > /dev/null 2>&1 || warn "pull node failed" )     &
+PULL_PIDS+=($!)
+
+# ── potato (обфусцированный xray, собранный через custom Dockerfile) ─────────
+#
+# Вместо docker pull + docker run строим свой образ через docker compose build:
+#   Dockerfile: FROM remnawave/node:latest → переименование xray бинаря в webd
+#               + патч supervisord.conf, xray.service.js, entrypoint.sh
+#   → ps aux покажет "webd" вместо "rw-core"
+#   → ls /usr/local/bin/ внутри контейнера не содержит "xray" / "rw-core"
+#   → docker images не содержит remnawave/node (после rmi upstream)
+#
+# Обновление: cd /opt/potato-core && docker compose build --pull && docker compose up -d
+mkdir -p /opt/potato-core /var/log/potato
+mkdir -p "$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
+
+cat > /opt/potato-core/Dockerfile << 'POTATO_DOCKERFILE'
+FROM remnawave/node:latest
+USER root
+# Переименовать реальный xray binary + удалить симлинк-псевдоним.
+# Пропатчить supervisord, nestjs-код и entrypoint чтобы ссылались на новый путь.
+# Используем простые sed-паттерны (без alternation) — совместимость с busybox sed.
+RUN mv /usr/local/bin/xray /usr/local/bin/webd && \
+    rm -f /usr/local/bin/rw-core && \
+    sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' /etc/supervisord.conf && \
+    sed -i 's|\[program:xray\]|[program:webd]|g' /etc/supervisord.conf && \
+    sed -i 's|xray\.err\.log|webd.err.log|g' /etc/supervisord.conf && \
+    sed -i 's|xray\.out\.log|webd.out.log|g' /etc/supervisord.conf && \
+    sed -i "s|'/usr/local/bin/xray'|'/usr/local/bin/webd'|g" \
+        /opt/app/dist/src/modules/xray-core/xray.service.js && \
+    sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' /usr/local/bin/docker-entrypoint.sh && \
+    sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /usr/local/bin/docker-entrypoint.sh
+POTATO_DOCKERFILE
+
+cat > /opt/potato-core/docker-compose.yml << EOF
 services:
-  remnanode:
-    container_name: remnanode
-    hostname: remnanode
-    image: remnawave/node:latest
+  potato:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: local/potato:v1
+    container_name: potato
+    hostname: potato
     network_mode: host
     restart: always
     cap_add:
@@ -627,36 +607,49 @@ services:
       nofile:
         soft: 1048576
         hard: 1048576
-    environment:
-      - NODE_PORT=${NODE_PORT}
-      - SECRET_KEY=${SECRET_KEY}
+    env_file:
+      - .env
     volumes:
-      - '/var/log/remnanode:/var/log/remnanode'
+      - '/var/log/potato:/var/log/app'
+      - '${INSTALL_DIR}/nginx/ssl/vinnypuxtomoon:/etc/ssl/app:ro'
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 EOF
 
-# Node Exporter
-if docker ps --format '{{.Names}}' | grep -q "^node-exporter$"; then
-  ok "node-exporter уже запущен"
+printf 'NODE_PORT=%s\nSECRET_KEY=%s\n' "$NODE_PORT" "$SECRET_KEY" > /opt/potato-core/.env
+chmod 600 /opt/potato-core/.env
+
+if docker ps --format '{{.Names}}' | grep -q "^potato$"; then
+  ok "potato уже запущен"
 else
-  docker rm -f node-exporter > /dev/null 2>&1 || true
-  if docker run -d \
-      --name node-exporter \
-      --network host \
-      --pid host \
-      --restart always \
-      -v /:/host:ro,rslave \
-      prom/node-exporter:latest \
-      --path.rootfs=/host \
-      --web.listen-address=":$NODE_EXPORTER_PORT" > /dev/null 2>&1; then
-    ok "node-exporter на порту $NODE_EXPORTER_PORT"
+  info "Собираем обфусцированный образ potato (~30s)..."
+  docker rm -f potato > /dev/null 2>&1 || true
+  ( cd /opt/potato-core && docker compose up -d --build > /dev/null 2>&1 )
+  # Убираем upstream-тег чтобы docker images не показывал remnawave/node
+  docker rmi remnawave/node:latest > /dev/null 2>&1 || true
+  if wait_container_running potato 15; then
+    ok "potato запущен (obfuscated build)"
   else
-    warn "node-exporter не запустился"
+    warn "potato не запустился — проверь: docker logs potato"
   fi
 fi
 
+# ── beeper (metrics, простой retag без патчей) ───────────────────────────────
+mkdir -p /opt/potato-metrics
+
+if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^local/beeper:v1$"; then
+  info "Загружаем beeper..."
+  docker pull prom/node-exporter:latest > /dev/null 2>&1 || warn "pull beeper failed"
+  docker tag prom/node-exporter:latest local/beeper:v1 > /dev/null 2>&1
+  docker rmi prom/node-exporter:latest > /dev/null 2>&1 || true
+fi
+
 # Logrotate (раз в сутки штатным cron.daily; size 100M триггерит ротацию раньше)
-cat > /etc/logrotate.d/remnanode << 'LOGROTATE'
-/var/log/remnanode/*.log {
+cat > /etc/logrotate.d/potato << 'LOGROTATE'
+/var/log/potato/*.log {
     daily
     size 100M
     rotate 5
@@ -667,14 +660,13 @@ cat > /etc/logrotate.d/remnanode << 'LOGROTATE'
 }
 LOGROTATE
 # /etc/cron.daily/logrotate уже идёт в пакете logrotate — отдельный cron не нужен
-rm -f /etc/cron.d/remnanode-logrotate 2>/dev/null || true
+rm -f /etc/cron.d/remnanode-logrotate /etc/cron.d/potato-logrotate 2>/dev/null || true
 
-mkdir -p /opt/node-exporter
-cat > /opt/node-exporter/docker-compose.yml << EOF
+cat > /opt/potato-metrics/docker-compose.yml << EOF
 services:
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: node-exporter
+  beeper:
+    image: local/beeper:v1
+    container_name: beeper
     network_mode: host
     pid: host
     restart: always
@@ -683,7 +675,56 @@ services:
     command:
       - '--path.rootfs=/host'
       - '--web.listen-address=:${NODE_EXPORTER_PORT}'
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 EOF
+
+if docker ps --format '{{.Names}}' | grep -q "^beeper$"; then
+  ok "beeper уже запущен"
+else
+  docker rm -f beeper > /dev/null 2>&1 || true
+  ( cd /opt/potato-metrics && docker compose up -d > /dev/null 2>&1 )
+  if docker ps --format '{{.Names}}' | grep -q "^beeper$"; then
+    ok "beeper на порту $NODE_EXPORTER_PORT"
+  else
+    warn "beeper не запустился"
+  fi
+fi
+
+# ── Helper-скрипт для обновления образов ──────────────────────────────────────
+# Использование: /opt/potato-core/update.sh
+cat > /opt/potato-core/update.sh << 'UPDATE_SH'
+#!/bin/bash
+# Обновление potato (xray) и beeper (metrics) до свежих upstream-версий.
+# Сохраняет обфускацию (rebuild через наш Dockerfile, retag, rmi upstream).
+set -e
+GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}✓${NC} $*"; }
+info() { echo -e "${CYAN}→${NC} $*"; }
+
+info "Обновляем potato (xray)..."
+cd /opt/potato-core
+docker compose build --pull
+docker rmi remnawave/node:latest 2>/dev/null || true
+docker compose up -d
+ok "potato обновлён"
+
+info "Обновляем beeper (metrics)..."
+docker pull prom/node-exporter:latest > /dev/null
+docker tag prom/node-exporter:latest local/beeper:v1
+docker rmi prom/node-exporter:latest 2>/dev/null || true
+cd /opt/potato-metrics
+docker compose up -d --force-recreate
+ok "beeper обновлён"
+
+echo ""
+ok "Готово. Логи potato:"
+docker logs --tail 30 potato
+UPDATE_SH
+chmod +x /opt/potato-core/update.sh
 
 # =============================================================================
 # 5. Клонирование репы + nginx (docker compose)
@@ -692,8 +733,6 @@ header "5/5 — Nginx + лендинг"
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   info "Обновляем репозиторий..."
-  # Откатываем локальные правки (патчи от прошлого --with-wl) перед pull
-  git -C "$INSTALL_DIR" checkout -- docker-compose.yml nginx/nginx.conf 2>/dev/null || true
   git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
   ok "Репозиторий обновлён"
 else
@@ -709,13 +748,8 @@ fi
 
 cd "$INSTALL_DIR"
 
-# 1. Гарантируем наличие vinnypuxtomoon cert (реальный wildcard или placeholder)
+# Гарантируем наличие vinnypuxtomoon cert (реальный wildcard или placeholder)
 ensure_vinnypuxtomoon_cert
-
-# 2. Применяем WL-патчи (если --with-wl) ПОСЛЕ cert и ДО сборки контейнера
-if [[ "$WITH_WL" == "true" ]]; then
-  apply_wl_patches
-fi
 
 # Дожидаемся всех фоновых docker pull (если ещё не закончились)
 if [[ ${#PULL_PIDS[@]} -gt 0 ]]; then
@@ -741,7 +775,7 @@ echo ""
 
 echo -e "${BOLD}Контейнеры:${NC}"
 docker ps --format "  {{.Names}}\t{{.Status}}" \
-  | grep -E "remnanode|node-exporter|nginx" || true
+  | grep -E "potato|beeper|wombat" || true
 echo ""
 
 echo -e "${BOLD}Prometheus (prometheus.yml):${NC}"
@@ -758,3 +792,40 @@ echo ""
 
 echo -e "${BOLD}Логи установки:${NC} $LOG_FILE"
 echo ""
+
+# ─── Финальная очистка (обфускация следов установки) ─────────────────────────
+# Удаляем всё что намекает на setup-процесс и оригинальные имена проекта.
+# Безопасно: systemd продолжит работать с контейнерами через docker restart=always.
+{
+  # Resume-скрипт (использовался для продолжения после reboot — больше не нужен)
+  rm -f "$SCRIPT_PATH"
+
+  # Systemd resume service (отключаем и удаляем unit)
+  systemctl disable "${RESUME_SERVICE}.service" > /dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/${RESUME_SERVICE}.service"
+  systemctl daemon-reload > /dev/null 2>&1 || true
+
+  # Legacy-артефакты от старых установок (если обновлялись со старых версий)
+  rm -f /etc/systemd/system/node-setup-resume.service 2>/dev/null
+  rm -f /usr/local/sbin/node-setup.sh 2>/dev/null
+  rm -rf /var/lib/node-setup 2>/dev/null
+  rm -rf /opt/vinnypux-node 2>/dev/null
+  rm -rf /opt/remnanode /opt/node-exporter 2>/dev/null
+  rm -rf /var/log/remnanode 2>/dev/null
+
+  # Временный setup-скрипт если юзер запускал через "curl -o /tmp/..."
+  rm -f /tmp/setup-node.sh /tmp/potato-setup.sh 2>/dev/null
+
+  # State-файл содержит SECRET_KEY — после успешной установки не нужен
+  rm -f "$STATE_FILE" 2>/dev/null
+
+  # Обрезаем setup.log до последних 100 строк (достаточно для последующего дебага)
+  if [[ -f "$LOG_FILE" ]]; then
+    tail -100 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+  fi
+
+  # Bash history текущей сессии (curl с SECRET_KEY / CF_Token засветился)
+  history -c 2>/dev/null || true
+  : > "${HOME}/.bash_history" 2>/dev/null || true
+  export HISTFILE=/dev/null
+} > /dev/null 2>&1 || true
