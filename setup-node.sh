@@ -774,14 +774,15 @@ if [[ ${#PULL_PIDS[@]} -gt 0 ]]; then
   wait "${PULL_PIDS[@]}" 2>/dev/null || true
 fi
 
-info "Собираем и запускаем nginx..."
+info "Собираем и запускаем wombat (nginx)..."
 docker compose down 2>/dev/null || true
 docker compose up -d --build
 
-if docker compose ps --format '{{.Names}}' | grep -q nginx; then
-  ok "nginx запущен"
+# Ждём до 15 сек пока wombat реально поднимется
+if wait_container_running wombat 15; then
+  ok "wombat запущен"
 else
-  warn "nginx не запустился — проверь: cd $INSTALL_DIR && docker compose logs"
+  warn "wombat не запустился — проверь: cd $INSTALL_DIR && docker compose logs"
 fi
 
 # ─── Готово ───────────────────────────────────────────────────────────────────
