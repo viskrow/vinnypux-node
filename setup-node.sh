@@ -21,6 +21,12 @@
 
 set -euo pipefail
 
+# HOME может быть не задан (systemd-context) или задан в /. Acme.sh ставит
+# бинарь в $HOME/.acme.sh — если HOME не /root, наш check "-x /root/.acme.sh/acme.sh"
+# проваливается даже после успешной установки.
+export HOME="${HOME:-/root}"
+[[ "$HOME" == "/" ]] && export HOME="/root"
+
 # ─── Константы ────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/viskrow/vinnypux-node.git"
 SCRIPT_URL="https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh"
@@ -120,6 +126,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+Environment=HOME=/root
 ExecStart=$SCRIPT_PATH
 StandardOutput=journal+console
 StandardError=journal+console
