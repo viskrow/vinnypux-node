@@ -647,6 +647,9 @@ chmod 600 /opt/potato-core/.env
 # на основе хеша image/config.
 info "Собираем/обновляем образ potato (~30s если изменился Dockerfile)..."
 ( cd /opt/potato-core && docker compose build --pull > /dev/null 2>&1 )
+# Сносим pre-obfuscation остаток если есть (старый remnanode из docker run --network host)
+# держит host-порты 443/8443/7443-7447 → новый potato в EADDRINUSE → Restarting loop.
+docker rm -f remnanode > /dev/null 2>&1 || true
 ( cd /opt/potato-core && docker compose up -d > /dev/null 2>&1 )
 # Убираем upstream-тег чтобы docker images не показывал remnawave/node
 docker rmi remnawave/node:latest > /dev/null 2>&1 || true
@@ -704,7 +707,9 @@ EOF
 if docker ps --format '{{.Names}}' | grep -q "^beeper$"; then
   ok "beeper уже запущен"
 else
-  docker rm -f beeper > /dev/null 2>&1 || true
+  # Сносим pre-obfuscation сирот которые держат host-порты (network_mode: host).
+  # Без этого новый beeper попадёт в EADDRINUSE → Restarting loop.
+  docker rm -f beeper node-exporter > /dev/null 2>&1 || true
   ( cd /opt/potato-metrics && docker compose up -d > /dev/null 2>&1 )
   if docker ps --format '{{.Names}}' | grep -q "^beeper$"; then
     ok "beeper на порту $NODE_EXPORTER_PORT"
@@ -776,7 +781,24 @@ if [[ ${#PULL_PIDS[@]} -gt 0 ]]; then
 fi
 
 info "Собираем и запускаем wombat (nginx)..."
+# Очистка конкурентов на портах: старые compose-проекты до обфускации,
+# system nginx/apache, orphan-контейнеры — всё что захватило 80/443/9443.
 docker compose down 2>/dev/null || true
+for legacy in /opt/vinnypux-node /opt/vinnypux-selfsteal /opt/remnanode; do
+  [[ -f "$legacy/docker-compose.yml" ]] && (cd "$legacy" && docker compose down 2>/dev/null) || true
+done
+for p in 80 443 9443; do
+  containers=$(docker ps -aq --filter "publish=$p" 2>/dev/null)
+  [[ -n "$containers" ]] && docker rm -f $containers > /dev/null 2>&1 || true
+done
+# System nginx/apache могут блокировать :80 — останавливаем (не удаляем, юзер сам решит)
+for svc in nginx apache2 httpd lighttpd; do
+  systemctl is-active --quiet "$svc" 2>/dev/null && {
+    warn "Останавливаем system $svc — он держит :80 и блокирует wombat"
+    systemctl stop "$svc" > /dev/null 2>&1 || true
+    systemctl disable "$svc" > /dev/null 2>&1 || true
+  }
+done
 docker compose up -d --build
 
 # Ждём до 15 сек пока wombat реально поднимется
