@@ -6,6 +6,7 @@ services:
     container_name: wombat
     ports:
       - "80:80"                  # optional reserve (HTTP origin для CDN-схем)
+      - "443:443"                # CDN origin pull (HTTPS) для fdc/the.caxero.ru
       - "127.0.0.1:9443:9443"    # self-steal target для xray Reality (proxy_protocol)
     volumes:
       - ./nginx/ssl:/etc/nginx/ssl:ro
