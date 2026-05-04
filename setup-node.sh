@@ -527,6 +527,7 @@ ufw default allow outgoing > /dev/null
 ufw allow "$SSH_PORT"/tcp   comment "SSH"        > /dev/null
 ufw allow "$NODE_PORT"/tcp  comment "mgmt"       > /dev/null
 ufw allow 443/tcp           comment "HTTPS"      > /dev/null
+ufw allow 2053/tcp          comment "HTTPS-cf"   > /dev/null
 ufw allow 8443/tcp          comment "HTTPS-alt"  > /dev/null
 ufw allow 6443/tcp          comment "edge"       > /dev/null
 ufw allow "$NODE_EXPORTER_PORT"/tcp comment "metrics" > /dev/null
@@ -537,7 +538,7 @@ if [[ "$WITH_BRIDGES" == "true" ]]; then
 fi
 
 ufw --force enable > /dev/null
-ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 8443, 6443, metrics($NODE_EXPORTER_PORT)"
+ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 2053, 8443, 6443, metrics($NODE_EXPORTER_PORT)"
 
 # =============================================================================
 # 4. Docker + контейнеры
