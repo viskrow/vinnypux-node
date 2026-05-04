@@ -530,6 +530,8 @@ ufw allow 443/tcp           comment "HTTPS"      > /dev/null
 ufw allow 2053/tcp          comment "HTTPS-cf"   > /dev/null
 ufw allow 8443/tcp          comment "HTTPS-alt"  > /dev/null
 ufw allow 6443/tcp          comment "edge"       > /dev/null
+# wombat (docker bridge 172.18.x) → xray :4443 cdn-xhttp inbound
+ufw allow from 172.16.0.0/12 to any port 4443 proto tcp comment "cdn-xhttp internal" > /dev/null
 ufw allow "$NODE_EXPORTER_PORT"/tcp comment "metrics" > /dev/null
 
 if [[ "$WITH_BRIDGES" == "true" ]]; then
