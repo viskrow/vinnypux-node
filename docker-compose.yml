@@ -4,14 +4,14 @@ services:
       context: .
       dockerfile: ./nginx/Dockerfile
     container_name: wombat
-    ports:
-      - "80:80"                  # optional reserve (HTTP origin для CDN-схем)
-      - "443:443"                # CDN origin pull (HTTPS) для fdc/the.caxero.ru
-      - "127.0.0.1:9443:9443"    # self-steal target для xray Reality (proxy_protocol)
+    # Host network: nginx биндится на :80/:443 хоста напрямую без docker-proxy/NAT.
+    # proxy_pass идёт на 127.0.0.1:4443 (loopback) → xray (тоже host network).
+    # Loopback connections не тратят ephemeral порты public-pool'а так как ядро
+    # это short-circuit'ит. Selfsteal listen-block в nginx.conf обязан биндиться
+    # ТОЛЬКО на 127.0.0.1:9443, иначе :9443 окажется публичным.
+    network_mode: host
     volumes:
       - ./nginx/ssl:/etc/nginx/ssl:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     logging:
       driver: "json-file"
       options:

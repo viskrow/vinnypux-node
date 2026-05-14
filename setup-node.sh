@@ -126,6 +126,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# Phase 5 (acme.sh DNS-01 + npm build wombat) обычно занимает 2-5 мин.
+# Без явного TimeoutStartSec systemd дефолтит на 90с и убивает середину.
+TimeoutStartSec=infinity
 Environment=HOME=/root
 ExecStart=$SCRIPT_PATH
 StandardOutput=journal+console
@@ -388,7 +391,9 @@ else
   # GPG ключ XanMod (официальный метод: gitlab.com/afrd.gpg)
   wget -qO - https://gitlab.com/afrd.gpg | gpg --yes --dearmor \
     -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null
-  echo 'deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org releases main' \
+  # XanMod репо: с 2026 мигрировали с flat-suite "releases" (пустой) на codename-style.
+  XANMOD_SUITE=$(lsb_release -cs 2>/dev/null || echo noble)
+  echo "deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org $XANMOD_SUITE main" \
     > /etc/apt/sources.list.d/xanmod-release.list
   wait_apt_lock
   apt-get update -qq > /dev/null 2>&1
