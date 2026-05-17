@@ -21,6 +21,29 @@
 
 set -euo pipefail
 
+# ─── Self-detach в system.slice ───────────────────────────────────────────────
+# При запуске через `nohup ... &` / `bash -c ... &` через SSH процесс умирает
+# посередине: parent SSH-session закрывается → systemd-logind делает cleanup
+# user@.service slice через UserStopDelaySec → kill всех процессов в slice
+# (включая nohup'нутые). Setsid отвязывает только tty, не slice. Решение:
+# `systemd-run --scope --slice=system.slice` — процесс выходит из user@ slice
+# в system.slice, переживает logout/SSH-disconnect/unattended-upgrades cascade.
+# VINNYPUX_DETACHED=1 защищает от рекурсии. Fallback на setsid --fork если
+# systemd-run недоступен (не-systemd система).
+if [ "${VINNYPUX_DETACHED:-0}" != "1" ] && [ ! -t 0 ]; then
+  if command -v systemd-run >/dev/null 2>&1; then
+    export VINNYPUX_DETACHED=1
+    exec systemd-run --scope --slice=system.slice --quiet \
+      --setenv=VINNYPUX_DETACHED=1 --setenv=HOME="${HOME:-/root}" \
+      --setenv=CF_Token="${CF_Token:-}" \
+      "$0" "$@" < /dev/null
+  elif command -v setsid >/dev/null 2>&1; then
+    export VINNYPUX_DETACHED=1
+    # --fork: гарантированный fork перед setsid, даже если parent уже pgrp leader
+    exec setsid --fork "$0" "$@" < /dev/null
+  fi
+fi
+
 # HOME может быть не задан (systemd-context) или задан в /. Acme.sh ставит
 # бинарь в $HOME/.acme.sh — если HOME не /root, наш check "-x /root/.acme.sh/acme.sh"
 # проваливается даже после успешной установки.
@@ -188,6 +211,43 @@ wait_apt_lock() {
   done
 }
 
+# ─── Pre-flight: блокируем apt-auxiliary сервисы + чистим broken 3rd-party repos
+# Auto-services (unattended-upgrades, esm-cache, packagekit, apt-news) хватают
+# apt-lock параллельно нашему install → race → exit 100. Maskим их.
+# Broken 3rd-party repos (ookla speedtest-cli bintray/packagecloud noble) дают
+# `apt-get update` exit 100 даже если main Ubuntu repos OK. Удаляем такие.
+apt_preflight() {
+  local svc
+  for svc in unattended-upgrades.service esm-cache.service apt-news.service \
+             packagekit.service apt-daily.service apt-daily-upgrade.service \
+             apt-daily.timer apt-daily-upgrade.timer \
+             ua-timer.service ua-reboot-cmds.service; do
+    systemctl stop "$svc" 2>/dev/null || true
+    systemctl mask "$svc" 2>/dev/null || true
+  done
+  rm -f /etc/apt/sources.list.d/ookla_speedtest-cli.list \
+        /etc/apt/sources.list.d/speedtest.list \
+        /etc/apt/sources.list.d/*bintray*.list \
+        /etc/apt/sources.list.d/*bintray*.sources 2>/dev/null || true
+}
+
+# ─── Безопасный apt-вызов: lock-timeout, log в файл, tail на failure ─────────
+# Заменяет `apt-get ... > /dev/null 2>&1` который скрывал ВСЕ ошибки и приводил
+# к silent-death под `set -e`. Теперь при failure видим last 20 строк apt-output.
+apt_safe() {
+  local desc="$1"; shift
+  local log
+  log=$(mktemp /tmp/apt-XXXXXX.log)
+  if "$@" -o DPkg::Lock::Timeout=300 > "$log" 2>&1; then
+    rm -f "$log"
+    return 0
+  fi
+  warn "apt-get $desc упал, последние строки:"
+  tail -20 "$log" >&2
+  rm -f "$log"
+  die "apt-get $desc failed"
+}
+
 # ─── Активный polling: ждём пока контейнер реально стартует (вместо sleep) ───
 wait_container_running() {
   local name=$1
@@ -353,13 +413,16 @@ header "1/5 — Пакеты + обновление + ядро"
 
 NEED_REBOOT=false
 
+# ── 1.0. Pre-flight: глушим apt-auxiliary services + сносим broken 3rd-party repos
+apt_preflight
+
 # ── 1.1. Базовые пакеты одним вызовом ────────────────────────────────────────
 wait_apt_lock
 info "Устанавливаем базовые пакеты..."
-apt-get update -qq > /dev/null 2>&1
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+apt_safe "update" apt-get update -qq
+apt_safe "install base" env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
   gnupg wget curl ca-certificates \
-  ufw logrotate git openssl socat cron > /dev/null 2>&1
+  ufw logrotate git openssl socat cron
 ok "Базовые пакеты установлены"
 
 # ── 1.2. apt upgrade ─────────────────────────────────────────────────────────
@@ -368,9 +431,9 @@ if [[ "$SKIP_UPDATE" == "true" ]]; then
 else
   wait_apt_lock
   info "apt upgrade..."
-  DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq \
+  apt_safe "upgrade" env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq \
     -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold" > /dev/null 2>&1
+    -o Dpkg::Options::="--force-confold"
   ok "Система обновлена"
 fi
 [[ -f /var/run/reboot-required ]] && NEED_REBOOT=true
@@ -396,7 +459,7 @@ else
   echo "deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org $XANMOD_SUITE main" \
     > /etc/apt/sources.list.d/xanmod-release.list
   wait_apt_lock
-  apt-get update -qq > /dev/null 2>&1
+  apt_safe "update (xanmod)" apt-get update -qq
 
   # Подбираем пакет под CPU-уровень с фолбэком вниз
   XANMOD_PKG=""
@@ -408,8 +471,7 @@ else
   [[ -z "$XANMOD_PKG" ]] && die "Не найден пакет XanMod"
 
   wait_apt_lock
-  apt-get install -y "$XANMOD_PKG" > /dev/null 2>&1 \
-    || die "Установка XanMod провалилась — см. apt лог"
+  apt_safe "install xanmod" apt-get install -y "$XANMOD_PKG"
   ok "$XANMOD_PKG установлен"
   NEED_REBOOT=true
 
