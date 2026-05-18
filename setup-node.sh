@@ -30,7 +30,9 @@ set -euo pipefail
 # в system.slice, переживает logout/SSH-disconnect/unattended-upgrades cascade.
 # VINNYPUX_DETACHED=1 защищает от рекурсии. Fallback на setsid --fork если
 # systemd-run недоступен (не-systemd система).
-if [ "${VINNYPUX_DETACHED:-0}" != "1" ] && [ ! -t 0 ]; then
+# INVOCATION_ID set by systemd для unit-launched processes → skip detach
+# (мы уже в нужной slice, повторный exec systemd-run только сломает parent unit accounting)
+if [ "${VINNYPUX_DETACHED:-0}" != "1" ] && [ ! -t 0 ] && [ -z "${INVOCATION_ID:-}" ]; then
   if command -v systemd-run >/dev/null 2>&1; then
     export VINNYPUX_DETACHED=1
     exec systemd-run --scope --slice=system.slice --quiet \
