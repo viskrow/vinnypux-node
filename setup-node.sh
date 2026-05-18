@@ -16,7 +16,9 @@
 #                          Без флага — placeholder cert (nginx стартует, но
 #                          реальные клиенты на *.vinnypuxtomoon.today не пойдут).
 #   --no-update          пропустить apt upgrade
-#   --ssh-port 2222      если SSH на нестандартном порту
+#   --ssh-port 22        SSH сервер хоста (только для UFW allow), дефолт 22
+#   --node-port 3318     Remnawave node-agent listen port (обфускация),
+#                          дефолт 3318. В Remnawave panel entry укажи такой же.
 # =============================================================================
 
 set -euo pipefail
@@ -56,7 +58,7 @@ export HOME="${HOME:-/root}"
 REPO_URL="https://github.com/viskrow/vinnypux-node.git"
 SCRIPT_URL="https://raw.githubusercontent.com/viskrow/vinnypux-node/main/setup-node.sh"
 INSTALL_DIR="/opt/potato"
-NODE_PORT="2222"
+NODE_PORT="3318"  # дефолт обфусцированный; override через --node-port
 NODE_EXPORTER_PORT="9100"
 STATE_DIR="/var/lib/sysboot"
 STATE_FILE="$STATE_DIR/state.env"
@@ -152,8 +154,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 # Phase 5 (acme.sh DNS-01 + npm build wombat) обычно занимает 2-5 мин.
-# Без явного TimeoutStartSec systemd дефолтит на 90с и убивает середину.
-TimeoutStartSec=infinity
+# Без явного timeout systemd дефолтит на 90с и убивает середину.
+# `infinity` иногда некорректно парсится для Type=oneshot на разных systemd
+# версиях → используем `0` (документированное "disable") + двойная защита
+# через TimeoutSec (покрывает start+stop).
+TimeoutStartSec=0
+TimeoutSec=0
 Environment=HOME=/root
 ExecStart=$SCRIPT_PATH
 StandardOutput=journal+console
@@ -378,6 +384,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --secret-key)     SECRET_KEY="$2";    shift 2 ;;
     --ssh-port)       SSH_PORT="$2";      shift 2 ;;
+    --node-port)      NODE_PORT="$2";     shift 2 ;;
     --no-update)      SKIP_UPDATE="true"; shift ;;
     --with-bridges)   WITH_BRIDGES="true"; shift ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
