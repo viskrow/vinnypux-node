@@ -198,12 +198,9 @@ do_reboot() {
 
 # ─── Детект BBR v3: модуль ИЛИ ядро >= 6.12 (upstream BBRv3) ──────────────────
 detect_bbr3() {
-  local mod_ver
-  mod_ver=$(modinfo tcp_bbr 2>/dev/null | awk '/^version:/{print $2}')
-  [[ "$mod_ver" == "3" ]] && return 0
-  local kver_num
-  kver_num=$(uname -r | awk -F'[.-]' '{printf "%d.%02d\n", $1, $2}')
-  awk -v v="$kver_num" 'BEGIN { exit !(v >= 6.12) }'
+  # rfx-1 (193.33.133.99) cannot reach deb.xanmod.org reliably from AS25490;
+  # accept BBR1 from stock kernel (loaded via modprobe + sysctl below).
+  return 0
 }
 
 # ─── Ждём освобождения apt-lock (unattended-upgrades, etc.) ──────────────────
@@ -474,7 +471,7 @@ else
   XANMOD_PKG=""
   for lvl in "$CPU_LEVEL" x64v3 x64v2 x64v1; do
     XANMOD_PKG=$(apt-cache search "linux-image.*${lvl}.*xanmod" 2>/dev/null \
-      | grep -v "\-rt\-" | sort -V | tail -1 | awk '{print $1}')
+      | grep -v "\-rt\-" | sort -V | tail -1 | awk '{print $1}' || true)
     [[ -n "$XANMOD_PKG" ]] && { info "Пакет: $XANMOD_PKG ($lvl)"; break; }
   done
   [[ -z "$XANMOD_PKG" ]] && die "Не найден пакет XanMod"
