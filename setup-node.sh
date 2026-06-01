@@ -471,7 +471,7 @@ else
   XANMOD_PKG=""
   for lvl in "$CPU_LEVEL" x64v3 x64v2 x64v1; do
     XANMOD_PKG=$(apt-cache search "linux-image.*${lvl}.*xanmod" 2>/dev/null \
-      | grep -v "\-rt\-" | sort -V | tail -1 | awk '{print $1}' || true)
+      | { grep -v "\-rt\-" || true; } | sort -V | tail -1 | awk '{print $1}' || true)
     [[ -n "$XANMOD_PKG" ]] && { info "Пакет: $XANMOD_PKG ($lvl)"; break; }
   done
   [[ -z "$XANMOD_PKG" ]] && die "Не найден пакет XanMod"
