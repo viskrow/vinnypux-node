@@ -9,3 +9,6 @@ FROM nginx:alpine
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 # ssl монтируется через volume в docker-compose — не копируем в image
+# Пустой dir для include /etc/nginx/conf.d/local/*.conf — на проде остаётся пустым
+# (glob матчит ноль → ок), на pearly наполняется bind-mount'ом из override.yml.
+RUN mkdir -p /etc/nginx/conf.d/local

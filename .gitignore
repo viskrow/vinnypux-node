@@ -9,6 +9,12 @@ nginx/ssl/wl-ws/*.pem
 configs/
 renew-cert.sh
 
+# ─── Pearly-only (dev): NGENIX vinnyplace verification + compose override ─
+# Не для прод-деплоя — иначе compose override ломает prod-ноды и палит vinnyplace.
+# См. nginx.conf: include /etc/nginx/conf.d/local/*.conf
+docker-compose.override.yml
+nginx/conf.d/local/
+
 # ─── Локальная документация и шпаргалки ─────────────────────────────────
 docs/
 CLAUDE.md
