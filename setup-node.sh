@@ -19,6 +19,10 @@
 #   --ssh-port 22        SSH сервер хоста (только для UFW allow), дефолт 22
 #   --node-port 3318     Remnawave node-agent listen port (обфускация),
 #                          дефолт 3318. В Remnawave panel entry укажи такой же.
+#   --f2b-ignoreip "..." admin/dev IP|CIDR для fail2ban ignoreip (space-separated).
+#                          НЕ хардкодить в репо — передавать аргументом. Без него
+#                          в ignoreip только localhost (риск забанить админа).
+#                          Env F2B_IGNOREIP=... тоже работает.
 # =============================================================================
 
 set -euo pipefail
@@ -117,6 +121,7 @@ SECRET_KEY=$(printf '%q' "$SECRET_KEY")
 SSH_PORT=$(printf '%q' "$SSH_PORT")
 SKIP_UPDATE=$(printf '%q' "$SKIP_UPDATE")
 WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
+F2B_IGNOREIP=$(printf '%q' "$F2B_IGNOREIP")
 CF_Token=$(printf '%q' "$CF_Token")
 EOF
   chmod 600 "$STATE_FILE"
@@ -367,6 +372,7 @@ SECRET_KEY=""
 SSH_PORT="22"
 SKIP_UPDATE="false"
 WITH_BRIDGES="false"
+F2B_IGNOREIP="${F2B_IGNOREIP:-}"  # доп. admin/dev IP|CIDR для fail2ban ignoreip (через --f2b-ignoreip; НЕ хардкодить в репо)
 CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
 PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
 
@@ -384,6 +390,7 @@ while [[ $# -gt 0 ]]; do
     --node-port)      NODE_PORT="$2";     shift 2 ;;
     --no-update)      SKIP_UPDATE="true"; shift ;;
     --with-bridges)   WITH_BRIDGES="true"; shift ;;
+    --f2b-ignoreip)   F2B_IGNOREIP="$2";  shift 2 ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
   esac
@@ -539,6 +546,11 @@ net.core.netdev_max_backlog = 250000
 net.ipv4.tcp_max_syn_backlog = 8192
 net.core.somaxconn = 65535
 net.ipv4.ip_local_port_range = 1024 65535
+# ── Резерв сервисных портов от эфемерного диапазона ───────────────────────────
+# port_range расширен до 1024 → ядро иначе хватает сервисные порты (2053/7443/7444/...)
+# как эфемерные source-порты исходящих коннектов; если занят в момент старта xray →
+# инбаунд падает с "bind: address already in use" и НЕ ретраит (порт молча не слушается).
+net.ipv4.ip_local_reserved_ports = 443,2053,2096,4443,5443,6443,7443-7447,8443-8444,${NODE_PORT},${NODE_EXPORTER_PORT}
 fs.file-max = 1000000
 EOF
 sysctl -p /etc/sysctl.d/99-vpn-perf.conf > /dev/null
@@ -617,6 +629,44 @@ fi
 
 ufw --force enable > /dev/null
 ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 2053, 8443, 6443, 7443, 7444, 2096/udp, metrics($NODE_EXPORTER_PORT)"
+
+# ─── SSH anti-flood (без смены порта) ─────────────────────────────────────────
+# Сканеры флудят :22, держат unauth-слоты до LoginGraceTime → MaxStartups
+# переполняется → sshd рубит RST'ом легит-коннекты (kex_exchange_identification).
+cat > /etc/ssh/sshd_config.d/99-antiflood.conf << 'SSHEOF'
+LoginGraceTime 20
+MaxStartups 60:30:200
+MaxSessions 20
+PerSourceMaxStartups 10
+PerSourceNetBlockSize 24
+SSHEOF
+if sshd -t 2>/dev/null; then
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+  ok "SSH anti-flood применён (LoginGraceTime 20, MaxStartups 60:30:200, PerSource 10)"
+else
+  rm -f /etc/ssh/sshd_config.d/99-antiflood.conf
+  warn "sshd -t fail → anti-flood drop-in откатан"
+fi
+
+# ─── fail2ban (банит SSH-сканеры) ─────────────────────────────────────────────
+# ignoreip из --f2b-ignoreip (admin/dev IP), НЕ хардкодится в репо. aggressive-mode
+# ловит "Connection reset"/"Did not receive identification string".
+if DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban > /dev/null 2>&1; then
+  cat > /etc/fail2ban/jail.d/sshd.local << F2BEOF
+[sshd]
+enabled = true
+mode = aggressive
+maxretry = 3
+findtime = 10m
+bantime = 1d
+ignoreip = 127.0.0.1/8 ::1 ${F2B_IGNOREIP}
+F2BEOF
+  systemctl enable --now fail2ban > /dev/null 2>&1 || true
+  [[ -z "$F2B_IGNOREIP" ]] && warn "fail2ban: --f2b-ignoreip не задан → в ignoreip только localhost (рискуешь забанить админа на flaky-линке)"
+  ok "fail2ban установлен (sshd aggressive, ignoreip: localhost${F2B_IGNOREIP:+ + $F2B_IGNOREIP})"
+else
+  warn "fail2ban установить не удалось — пропускаем"
+fi
 
 # =============================================================================
 # 4. Docker + контейнеры
