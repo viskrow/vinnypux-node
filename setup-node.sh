@@ -551,6 +551,18 @@ net.ipv4.ip_local_port_range = 1024 65535
 # как эфемерные source-порты исходящих коннектов; если занят в момент старта xray →
 # инбаунд падает с "bind: address already in use" и НЕ ретраит (порт молча не слушается).
 net.ipv4.ip_local_reserved_ports = 443,2053,2096,4443,5443,6443,7443-7447,8443-8444,${NODE_PORT},${NODE_EXPORTER_PORT}
+# ── Анти-спуф (loose RP-filter, безопасно для multi-IP/policy-routing) ────────
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+# ── Память / swap (не свопиться под нагрузкой) ───────────────────────────────
+vm.swappiness = 10
+# ── UDP min-буферы (Hysteria2 / QUIC) ────────────────────────────────────────
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+# ── SYN-флуд + TIME-WAIT хардеринг ───────────────────────────────────────────
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_rfc1337 = 1
+net.ipv4.tcp_no_metrics_save = 1
 fs.file-max = 1000000
 EOF
 sysctl -p /etc/sysctl.d/99-vpn-perf.conf > /dev/null
@@ -600,7 +612,24 @@ SVCEOF
   systemctl enable set-qdisc-fq.service > /dev/null 2>&1
 fi
 
-ok "BBR3 + sysctl + ulimits + fq настроены"
+# THP off (latency: убирает фоновую memory-compaction под нагрузкой; THP — это /sys, не sysctl)
+echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+echo never > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
+cat > /etc/systemd/system/disable-thp.service << 'THPEOF'
+[Unit]
+Description=Disable Transparent Huge Pages
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled; echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+THPEOF
+systemctl daemon-reload
+systemctl enable --now disable-thp.service > /dev/null 2>&1
+
+ok "BBR3 + sysctl + ulimits + fq + THP-off настроены"
 
 # =============================================================================
 # 3. Firewall (UFW)
