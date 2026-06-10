@@ -160,8 +160,8 @@ Wants=network-online.target
 Type=oneshot
 # Phase 5 (acme.sh DNS-01 + npm build wombat) обычно занимает 2-5 мин.
 # Без явного timeout systemd дефолтит на 90с и убивает середину.
-# `infinity` иногда некорректно парсится для Type=oneshot на разных systemd
-# версиях → используем `0` (документированное "disable") + двойная защита
+# infinity иногда некорректно парсится для Type=oneshot на разных systemd
+# версиях → используем 0 (документированное disable) + двойная защита
 # через TimeoutSec (покрывает start+stop).
 TimeoutStartSec=0
 TimeoutSec=0
@@ -239,6 +239,11 @@ apt_preflight() {
         /etc/apt/sources.list.d/speedtest.list \
         /etc/apt/sources.list.d/*bintray*.list \
         /etc/apt/sources.list.d/*bintray*.sources 2>/dev/null || true
+  # стрип битого xanmod flat-suite репо (старые ноды: "deb ... releases main" → apt update 404).
+  # xanmod-блок ниже re-создаёт codename-suite если ядро нужно.
+  if grep -qsE "deb\.xanmod\.org +releases +main" /etc/apt/sources.list.d/xanmod-release.list 2>/dev/null; then
+    rm -f /etc/apt/sources.list.d/xanmod-release.list
+  fi
 }
 
 # ─── Безопасный apt-вызов: lock-timeout, log в файл, tail на failure ─────────
@@ -317,10 +322,22 @@ issue_wildcard_acme() {
   elif grep -q -E 'Domains not changed|Skip, Next renewal' /tmp/acme-issue.log; then
     ok "Cert уже валиден — обновление не требуется"
   else
-    warn "acme.sh issue провалился:"
+    warn "acme.sh issue провалился (LE rate-limit 5/неделю? --cf-token?):"
     tail -20 /tmp/acme-issue.log
     rm -f /tmp/acme-issue.log
-    die "Не удалось выпустить cert через DNS-01 (проверь --cf-token)"
+    # НЕ валим setup: оставляем существующий cert если есть, иначе placeholder.
+    # Реальный fix при LE-лимите — скопировать wildcard с живой ноды в $cert_dir до запуска.
+    if [[ -s "$cert_dir/cert.pem" ]] && [[ -s "$cert_dir/key.pem" ]]; then
+      warn "оставляю существующий cert в $cert_dir"
+    else
+      warn "генерю placeholder cert (nginx стартует; замени реальным wildcard позже)"
+      openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -keyout "$cert_dir/key.pem" -out "$cert_dir/cert.pem" \
+        -subj "/CN=placeholder" \
+        -addext "subjectAltName=DNS:vinnypuxtomoon.today,DNS:*.vinnypuxtomoon.today" > /dev/null 2>&1
+      chmod 600 "$cert_dir/key.pem"
+    fi
+    return 0
   fi
   rm -f /tmp/acme-issue.log
 
@@ -346,13 +363,17 @@ ensure_vinnypuxtomoon_cert() {
   local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
   mkdir -p "$cert_dir"
 
-  if [[ -n "$CF_Token" ]]; then
-    issue_wildcard_acme
+  # 1. cert уже есть (напр. скопирован с другой ноды) → не трогаем.
+  # ПРИОРИТЕТ выше acme: обходит LE rate-limit (5 dup-сертов/неделю) при серии деплоев —
+  # копируешь wildcard с живой ноды в $cert_dir и acme скипается.
+  if [[ -s "$cert_dir/cert.pem" ]] && [[ -s "$cert_dir/key.pem" ]]; then
+    ok "vinnypuxtomoon cert уже на месте — не трогаем (acme скип)"
     return 0
   fi
 
-  if [[ -s "$cert_dir/cert.pem" ]] && [[ -s "$cert_dir/key.pem" ]]; then
-    ok "vinnypuxtomoon cert уже на месте — не трогаем"
+  # 2. CF_Token задан → реальный wildcard через acme.sh (non-fatal: при fail → placeholder)
+  if [[ -n "$CF_Token" ]]; then
+    issue_wildcard_acme
     return 0
   fi
 
@@ -804,7 +825,14 @@ chmod 600 /opt/potato-core/.env
 # обновиться между запусками), compose сам решает пересоздавать ли контейнер
 # на основе хеша image/config.
 info "Собираем/обновляем образ potato (~30s если изменился Dockerfile)..."
-( cd /opt/potato-core && docker compose build --pull > /dev/null 2>&1 )
+# Pre-pull базы с retry: Docker Hub ужесточил anonymous pull-лимит (2026) → --pull под set -e
+# падал на транзиентном flake (особенно cloud с shared NAT-egress). 3 попытки решают.
+for _try in 1 2 3; do
+  docker pull remnawave/node:latest > /dev/null 2>&1 && break
+  warn "pull remnawave/node:latest попытка $_try не удалась, retry через 10s..."; sleep 10
+done
+# --pull (база уже в кэше → быстро) ИЛИ fallback на чистый build из кэша если --pull rate-limited
+( cd /opt/potato-core && { docker compose build --pull || docker compose build; } > /dev/null 2>&1 )
 # Сносим pre-obfuscation остаток если есть (старый remnanode из docker run --network host)
 # держит host-порты 443/8443/7443-7447 → новый potato в EADDRINUSE → Restarting loop.
 docker rm -f remnanode > /dev/null 2>&1 || true
@@ -840,7 +868,7 @@ cat > /etc/logrotate.d/potato << 'LOGROTATE'
 }
 LOGROTATE
 # /etc/cron.daily/logrotate уже идёт в пакете logrotate — отдельный cron не нужен
-rm -f /etc/cron.d/remnanode-logrotate /etc/cron.d/potato-logrotate 2>/dev/null || true
+rm -f /etc/cron.d/remnanode-logrotate /etc/cron.d/potato-logrotate /etc/logrotate.d/remnanode 2>/dev/null || true
 
 cat > /opt/potato-metrics/docker-compose.yml << EOF
 services:
