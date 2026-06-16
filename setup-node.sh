@@ -680,6 +680,23 @@ fi
 ufw --force enable > /dev/null
 ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 2053, 8443, 6443, 7443, 7444, 2096/udp, metrics($NODE_EXPORTER_PORT)"
 
+# ─── AntiScanner: DROP RKN/TSPU active-probe scanner subnets ──────────────────
+# Preventive — scanners can't fingerprint this IP as a VPN endpoint, so the /32
+# stays "clean" in the registry longer. NOT a TSPU bypass (ISP-side block is a
+# separate problem). iptables mode ("2") inserts SCANNERS-BLOCK at INPUT 1,
+# above the UFW chains, so it must run AFTER `ufw --force enable`.
+info "AntiScanner (anti-probe)…"
+if printf '2\n' | bash <(curl -Ls https://raw.githubusercontent.com/sngvy/AntiScanner/refs/heads/main/AntiScanner.sh) > /var/log/antiscanner_install.log 2>&1 \
+   && iptables -nL SCANNERS-BLOCK >/dev/null 2>&1; then
+  # new installer ships only a daily cron (no systemd unit) → re-apply on reboot
+  if ! crontab -l 2>/dev/null | grep -q '@reboot.*update-antiscanner'; then
+    ( crontab -l 2>/dev/null; echo '@reboot /usr/local/bin/update-antiscanner.sh >> /var/log/antiscanner_update.log 2>&1' ) | crontab -
+  fi
+  ok "AntiScanner: $(iptables -nL SCANNERS-BLOCK | grep -cE 'DROP|REJECT') scanner-subnets (daily 03:20 + @reboot refresh)"
+else
+  warn "AntiScanner установка не удалась (см. /var/log/antiscanner_install.log) — продолжаю без него"
+fi
+
 # ─── SSH anti-flood (без смены порта) ─────────────────────────────────────────
 # Сканеры флудят :22, держат unauth-слоты до LoginGraceTime → MaxStartups
 # переполняется → sshd рубит RST'ом легит-коннекты (kex_exchange_identification).
