@@ -203,9 +203,17 @@ do_reboot() {
 
 # ─── Детект BBR v3: модуль ИЛИ ядро >= 6.12 (upstream BBRv3) ──────────────────
 detect_bbr3() {
-  # rfx-1 (193.33.133.99) cannot reach deb.xanmod.org reliably from AS25490;
-  # accept BBR1 from stock kernel (loaded via modprobe + sysctl below).
-  return 0
+  # Уже есть BBRv3? XanMod-ядро или upstream kernel >= 6.12.
+  uname -r | grep -qi xanmod && return 0
+  local kv; kv=$(uname -r); kv=${kv%%-*}
+  [[ "$(printf '%s\n6.12\n' "$kv" | sort -V | head -1)" == "6.12" ]] && return 0
+  # BBRv3 нет → нужен XanMod. Но если deb.xanmod.org недостижим (напр. rfx-1 из AS25490) —
+  # принимаем stock BBR1, чтобы установка не падала (curl без -f: 404 на / = достижим).
+  if ! curl -sS --max-time 8 -o /dev/null http://deb.xanmod.org/ 2>/dev/null; then
+    warn "deb.xanmod.org недостижим — XanMod пропущен, остаёмся на stock BBR1"
+    return 0
+  fi
+  return 1
 }
 
 # ─── Ждём освобождения apt-lock (unattended-upgrades, etc.) ──────────────────
