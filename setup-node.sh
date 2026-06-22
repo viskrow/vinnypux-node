@@ -909,7 +909,9 @@ ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
 LOADER
 /usr/local/sbin/edge-deny-load || true
 if ! crontab -l 2>/dev/null | grep -q 'edge-deny-load'; then
-  ( crontab -l 2>/dev/null; echo '@reboot /usr/local/sbin/edge-deny-load' ) | crontab -
+  # Note: { ... || true; ... } необходим — под `set -euo pipefail` пустой crontab
+  # делает `crontab -l` exit 1, subshell умирает до echo, pipefail валит скрипт.
+  { crontab -l 2>/dev/null || true; echo '@reboot /usr/local/sbin/edge-deny-load'; } | crontab -
 fi
 ok "edge-фильтр: $(iptables -nL EDGE-DENY 2>/dev/null | grep -c DROP) сетей (INPUT 1, @reboot)"
 
