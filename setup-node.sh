@@ -1000,7 +1000,7 @@ PULL_PIDS+=($!)
 #
 # Вместо docker pull + docker run строим свой образ через docker compose build:
 #   Dockerfile: FROM remnawave/node:latest → переименование xray бинаря в webd
-#               + патч supervisord.conf, xray.service.js, entrypoint.sh
+#               + патч пути xrayPath в /opt/app/dist/main.js (2.8.0-бандл, Debian 13)
 #   → ps aux покажет "webd" вместо "rw-core"
 #   → ls /usr/local/bin/ внутри контейнера не содержит "xray" / "rw-core"
 #   → docker images не содержит remnawave/node (после rmi upstream)
@@ -1012,16 +1012,14 @@ mkdir -p "$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
 cat > /opt/potato-core/Dockerfile << 'POTATO_DOCKERFILE'
 FROM remnawave/node:latest
 USER root
-# Переименовать реальный xray binary + удалить симлинк-псевдоним.
-# Меняем ТОЛЬКО путь к бинарю — program name и log-файлы ВНУТРИ контейнера
-# остаются "xray" (они не видны снаружи через ps aux, ими управляет nestjs XML-RPC).
+# Переименовать реальный xray binary + удалить симлинк-псевдоним + пропатчить путь.
+# Node 2.8.0 (Debian 13): dist забандлен в main.js, supervisord выпилен → патчим
+# единственный литерал xrayPath="/usr/local/bin/xray" в main.js (в 2.7.0 патчили
+# supervisord.conf + xray.service.js — их больше нет). program name / log-файлы ВНУТРИ
+# контейнера остаются "xray" (снаружи через ps aux не видны — процесс = webd).
 RUN mv /usr/local/bin/xray /usr/local/bin/webd && \
     rm -f /usr/local/bin/rw-core && \
-    sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' /etc/supervisord.conf && \
-    sed -i "s|'/usr/local/bin/xray'|'/usr/local/bin/webd'|g" \
-        /opt/app/dist/src/modules/xray-core/xray.service.js && \
-    sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' /usr/local/bin/docker-entrypoint.sh && \
-    sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /usr/local/bin/docker-entrypoint.sh
+    sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /opt/app/dist/main.js
 POTATO_DOCKERFILE
 
 cat > /opt/potato-core/docker-compose.yml << EOF
