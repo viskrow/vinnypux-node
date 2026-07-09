@@ -7,6 +7,7 @@ nginx/ssl/wl-ws/*.pem
 
 # ─── Локальные конфиги (содержат UUID/SECRET_KEY, не для git) ────────────
 configs/
+routings/
 renew-cert.sh
 
 # ─── Pearly-only (dev): NGENIX vinnyplace verification + compose override ─
