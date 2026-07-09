@@ -1012,14 +1012,19 @@ mkdir -p "$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
 cat > /opt/potato-core/Dockerfile << 'POTATO_DOCKERFILE'
 FROM remnawave/node:latest
 USER root
-# Переименовать реальный xray binary + удалить симлинк-псевдоним + пропатчить путь.
-# Node 2.8.0 (Debian 13): dist забандлен в main.js, supervisord выпилен → патчим
-# единственный литерал xrayPath="/usr/local/bin/xray" в main.js (в 2.7.0 патчили
-# supervisord.conf + xray.service.js — их больше нет). program name / log-файлы ВНУТРИ
-# контейнера остаются "xray" (снаружи через ps aux не видны — процесс = webd).
+# Переименовать реальный xray binary + удалить симлинк-псевдоним rw-core + пропатчить пути.
+# Node 2.8.0 (Debian 13): перешёл на s6-overlay (supervisord выпилен). xray запускает s6-сервис,
+# и ровно 2 s6-файла зовут /usr/local/bin/rw-core (симлинк→xray): xray/run (exec core) и
+# init-env.sh (детект XRAY_CORE_VERSION). Их ОБЯЗАТЕЛЬНО патчить, иначе после `rm rw-core`
+# s6 execает несуществующий бинарь → xray не стартует (баг hvds-us 2026-07-08, s6-разбор).
+# main.js-патч xrayPath — косметика баннера; реальный спавн+детект версии живут в s6-скриптах.
+# program name / log-файлы ВНУТРИ контейнера остаются "xray" (снаружи через ps aux = webd).
 RUN mv /usr/local/bin/xray /usr/local/bin/webd && \
     rm -f /usr/local/bin/rw-core && \
-    sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /opt/app/dist/main.js
+    sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /opt/app/dist/main.js && \
+    sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' \
+        /etc/s6-overlay/s6-rc.d/xray/run \
+        /etc/s6-overlay/scripts/init-env.sh
 POTATO_DOCKERFILE
 
 cat > /opt/potato-core/docker-compose.yml << EOF
