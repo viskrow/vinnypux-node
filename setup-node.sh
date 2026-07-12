@@ -915,6 +915,152 @@ if ! crontab -l 2>/dev/null | grep -q 'edge-deny-load'; then
 fi
 ok "edge-фильтр: $(iptables -nL EDGE-DENY 2>/dev/null | grep -c DROP) сетей (INPUT 1, @reboot)"
 
+# ─── AntiScanner (SCANNERS-BLOCK) ─────────────────────────────────────────────
+# Комплементарно edge-фильтру: ГРЧЦ/CyberOK CIDR-диапазоны + gist-автообновление.
+# Manual-лист ВСТРОЕН (self-contained); gist — best-effort (github на части RU-нод блочат) с
+# fallback на встроенный manual → жёсткой github-зависимости нет. Цепочка SCANNERS-BLOCK @INPUT 1,
+# persist через systemd-таймер (OnBootSec re-apply + daily refresh).
+info "Ставлю AntiScanner (SCANNERS-BLOCK)…"
+mkdir -p /usr/local/etc /usr/local/sbin
+cat > /usr/local/etc/antiscanner_manual.txt <<'ASMANUAL'
+# vinnypux manual scanner blocklist (curated) — merged into AntiScanner SCANNERS-BLOCK
+# Source: user's contact 2026-06-19. Mostly ФГУП ГРЧЦ (RKN scanner) + CyberOK + Selectel-hosted scanners.
+# Format: one IPv4/IPv6 or CIDR per line. '#' comments + blank lines ignored.
+# ГРЧЦ / Роскомнадзор (FGUP GRCHC) — main IP-ban scan source
+195.209.120.0/22
+195.209.122.0/24
+195.209.123.0/24
+212.192.156.0/22
+212.192.156.0/24
+212.192.157.0/24
+212.192.158.0/24
+185.224.228.0/24
+185.224.229.0/24
+185.224.230.0/24
+185.224.231.0/24
+62.76.98.0/24
+194.67.63.200/30
+5.143.224.100/30
+5.143.224.104/30
+# CyberOK (scan-24.skipa.cyberok.ru -> 45.146.167.56) + Beget-hosted
+45.146.167.56
+45.146.167.68
+45.146.167.105
+45.146.167.237
+# Selectel-hosted scanners
+31.131.251.106
+31.131.251.235
+31.131.255.205
+31.131.255.206
+31.131.255.207
+31.131.255.208
+31.131.255.209
+31.131.255.210
+31.131.255.211
+31.131.255.212
+31.131.255.240
+37.9.13.54
+37.9.13.105
+37.9.13.217
+45.92.176.94
+45.92.176.129
+45.92.176.143
+45.92.176.144
+45.92.176.145
+45.92.177.113
+45.92.177.127
+45.92.177.237
+212.41.12.45
+212.41.12.46
+212.41.12.47
+212.41.12.48
+212.41.13.23
+212.41.13.24
+212.41.13.25
+# misc RU scanner nets
+92.38.153.0/24
+85.142.100.0/24
+5.35.16.53
+188.68.217.207
+ASMANUAL
+cat > /usr/local/sbin/update-antiscanner.sh <<'ASUPD'
+#!/bin/bash
+# AntiScanner updater: gist (best-effort) -> cache, MERGED with local manual list, dedup.
+URL="https://gist.githubusercontent.com/sngvy/07cee7ac810c9d222fbebddff8c1d1b8/raw/blacklist.txt"
+CACHE="/usr/local/etc/antiscanner_blacklist.txt"     # last-good gist copy (github blocked on some RU nodes)
+MANUAL="/usr/local/etc/antiscanner_manual.txt"       # our curated ГРЧЦ/CyberOK list (extend freely)
+TEMP_FILE=$(mktemp); LIST=$(mktemp)
+MODE="iptables"
+
+setup_iptables_chains() {
+    for cmd in iptables ip6tables; do
+        if ! $cmd -L SCANNERS-BLOCK -n &>/dev/null; then
+            $cmd -N SCANNERS-BLOCK
+        else
+            $cmd -F SCANNERS-BLOCK
+        fi
+        if ! $cmd -C INPUT -j SCANNERS-BLOCK &>/dev/null; then
+            $cmd -I INPUT 1 -j SCANNERS-BLOCK
+        fi
+    done
+}
+
+# 1) upstream gist -> refresh cache (best effort; github is blocked from some RU segments)
+if curl -sSL --connect-timeout 8 --max-time 15 "$URL" -o "$TEMP_FILE" && [[ -s "$TEMP_FILE" ]]; then
+    install -D -m644 "$TEMP_FILE" "$CACHE"
+fi
+
+# 2) build working list = cache (gist) + manual, deduped
+: > "$LIST"
+[[ -s "$CACHE" ]]  && cat "$CACHE"  >> "$LIST"
+[[ -s "$MANUAL" ]] && cat "$MANUAL" >> "$LIST"
+# strip comments/blank, trim, dedup
+sed -e 's/#.*//' -e 's/[[:space:]]//g' "$LIST" | grep -E '.' | sort -u > "${LIST}.clean"
+mv "${LIST}.clean" "$LIST"
+
+if [[ -s "$LIST" ]]; then
+    setup_iptables_chains
+    while IFS= read -r subnet; do
+        [[ -z "$subnet" ]] && continue
+        if [[ "$subnet" =~ : ]]; then
+            ip6tables -A SCANNERS-BLOCK -s "$subnet" -j DROP 2>/dev/null
+        else
+            iptables  -A SCANNERS-BLOCK -s "$subnet" -j DROP 2>/dev/null
+        fi
+    done < "$LIST"
+    mkdir -p /etc/iptables
+    iptables-save  > /etc/iptables/rules.v4
+    ip6tables-save > /etc/iptables/rules.v6
+    echo "$(date '+%F %T') [SUCCESS] AntiScanner: $(wc -l < "$LIST") entries (gist/cache + manual)"
+else
+    echo "$(date '+%F %T') [SKIP] AntiScanner: empty list (no cache, no manual)"
+fi
+rm -f "$TEMP_FILE" "$LIST"
+ASUPD
+chmod +x /usr/local/sbin/update-antiscanner.sh
+cat > /etc/systemd/system/antiscanner.service <<'ASSVC'
+[Unit]
+Description=AntiScanner blacklist updater (SCANNERS-BLOCK)
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/update-antiscanner.sh
+ASSVC
+cat > /etc/systemd/system/antiscanner.timer <<'ASTIMER'
+[Unit]
+Description=AntiScanner refresh (boot + daily)
+[Timer]
+OnBootSec=2min
+OnCalendar=daily
+Persistent=true
+[Install]
+WantedBy=timers.target
+ASTIMER
+/usr/local/sbin/update-antiscanner.sh || true
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now antiscanner.timer 2>/dev/null || true
+ok "AntiScanner: $(iptables -S SCANNERS-BLOCK 2>/dev/null | grep -c DROP || echo 0) правил (SCANNERS-BLOCK, boot+daily)"
+
 # ─── SSH anti-flood (без смены порта) ─────────────────────────────────────────
 # Сканеры флудят :22, держат unauth-слоты до LoginGraceTime → MaxStartups
 # переполняется → sshd рубит RST'ом легит-коннекты (kex_exchange_identification).
