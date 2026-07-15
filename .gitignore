@@ -1,14 +1,13 @@
 # ─── Секреты (сертификаты, ключи, токены) ────────────────────────────────
 nginx/ssl/vinnypuxtomoon/*.pem
-nginx/ssl/wl-ws/*.pem
 .env
 *.env
 .acme.sh/
 
-# ─── Локальные конфиги (содержат UUID/SECRET_KEY, не для git) ────────────
+# ─── Локальные конфиги и скрипты (содержат UUID/SECRET_KEY, не для git) ──
 configs/
 routings/
-renew-cert.sh
+scripts/
 
 # ─── Pearly-only (dev): NGENIX vinnyplace verification + compose override ─
 # Не для прод-деплоя — иначе compose override ломает prod-ноды и палит vinnyplace.
