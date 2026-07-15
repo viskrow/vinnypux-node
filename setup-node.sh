@@ -464,7 +464,7 @@ info "Устанавливаем базовые пакеты..."
 apt_safe "update" apt-get update -qq
 apt_safe "install base" env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
   gnupg wget curl ca-certificates \
-  ufw logrotate git openssl socat cron
+  ufw logrotate git openssl socat cron ethtool
 ok "Базовые пакеты установлены"
 
 # ── 1.2. apt upgrade ─────────────────────────────────────────────────────────
@@ -641,6 +641,34 @@ SVCEOF
   systemctl enable set-qdisc-fq.service > /dev/null 2>&1
 fi
 
+# NIC RX ring → max (гасит burst rx_drops на high-pps нодах; virtio/без ethtool-g = no-op)
+cat > /usr/local/sbin/nic-ring.sh << 'RINGSH'
+#!/bin/sh
+IF=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$IF" ] || exit 0
+M=$(ethtool -g "$IF" 2>/dev/null | awk '/Pre-set/{f=1} f&&/^RX:/{print $2; exit}')
+case "$M" in ''|*[!0-9]*) exit 0 ;; esac
+C=$(ethtool -g "$IF" 2>/dev/null | awk 'f&&/^RX:/{print $2;exit} /Current hardware/{f=1}')
+[ "$C" = "$M" ] && exit 0
+ethtool -G "$IF" rx "$M" 2>/dev/null || true
+RINGSH
+chmod +x /usr/local/sbin/nic-ring.sh
+/usr/local/sbin/nic-ring.sh
+cat > /etc/systemd/system/nic-ring.service << 'RINGSVC'
+[Unit]
+Description=Maximise NIC RX ring buffer
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nic-ring.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+RINGSVC
+systemctl daemon-reload
+systemctl enable nic-ring.service > /dev/null 2>&1
+
 # THP off (latency: убирает фоновую memory-compaction под нагрузкой; THP — это /sys, не sysctl)
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
@@ -658,7 +686,7 @@ THPEOF
 systemctl daemon-reload
 systemctl enable --now disable-thp.service > /dev/null 2>&1
 
-ok "BBR3 + sysctl + ulimits + fq + THP-off настроены"
+ok "BBR3 + sysctl + ulimits + fq + THP-off + NIC-ring настроены"
 
 # =============================================================================
 # 3. Firewall (UFW)
