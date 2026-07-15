@@ -603,6 +603,7 @@ net.netfilter.nf_conntrack_max = 1000000
 net.netfilter.nf_conntrack_tcp_timeout_established = 1800
 net.netfilter.nf_conntrack_tcp_timeout_time_wait = 15
 EOF
+  echo nf_conntrack > /etc/modules-load.d/nf_conntrack.conf   # preload рано → sysctl не откатывается на ребуте (иначе nf_conntrack_* → kernel-дефолты)
   sysctl -p /etc/sysctl.d/99-conntrack.conf > /dev/null 2>&1 || true
 fi
 
