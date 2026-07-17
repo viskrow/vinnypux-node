@@ -159,12 +159,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 # Phase 5 (acme.sh DNS-01 + npm build wombat) обычно занимает 2-5 мин.
-# Без явного timeout systemd дефолтит на 90с и убивает середину.
-# infinity иногда некорректно парсится для Type=oneshot на разных systemd
-# версиях → используем 0 (документированное disable) + двойная защита
-# через TimeoutSec (покрывает start+stop).
-TimeoutStartSec=0
-TimeoutSec=0
+# Без явного timeout systemd дефолтит на 90с (DefaultTimeoutStartSec) и убивает
+# середину сборки образов. infinity корректно парсится для Type=oneshot
+# (systemd 255, проверено 2026-07-17: TimeoutStartUSec=infinity). Раньше стояло
+# =0 — семантически тоже infinity, но нода 78.159.245.126 всё равно отработала
+# по 90с-дефолту → используем явный infinity. TimeoutSec страхует start+stop.
+TimeoutStartSec=infinity
+TimeoutSec=infinity
 Environment=HOME=/root
 ExecStart=$SCRIPT_PATH
 StandardOutput=journal+console
