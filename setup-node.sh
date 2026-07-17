@@ -580,7 +580,7 @@ net.ipv4.ip_local_port_range = 1024 65535
 # port_range расширен до 1024 → ядро иначе хватает сервисные порты (2053/7443/7444/...)
 # как эфемерные source-порты исходящих коннектов; если занят в момент старта xray →
 # инбаунд падает с "bind: address already in use" и НЕ ретраит (порт молча не слушается).
-net.ipv4.ip_local_reserved_ports = 443,2053,2096,4443,5443,6443,7443-7447,8443-8444,${NODE_PORT},${NODE_EXPORTER_PORT}
+net.ipv4.ip_local_reserved_ports = 443,2053,2096,4443,4444,5443,6443,7443-7447,8443-8444,${NODE_PORT},${NODE_EXPORTER_PORT}
 # ── Анти-спуф (loose RP-filter, безопасно для multi-IP/policy-routing) ────────
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
