@@ -1164,6 +1164,32 @@ DOCKERCFG
   ok "Docker log-opts установлены (max 250MB на контейнер)"
 fi
 
+# ── journald cap + disk-guard ───────────────────────────────────────────────
+# Малодисковые ноды (CDNvideo 8.7G) ползут по journald/apt/docker → на full нода
+# умирает. Кап journald + пороговый reclaim-скрипт по крону.
+mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=200M\n' > /etc/systemd/journald.conf.d/99-cap.conf
+systemctl restart systemd-journald 2>/dev/null || true
+cat > /usr/local/sbin/disk-guard.sh <<'DGUARD'
+#!/bin/bash
+# disk-guard: reclaim space when / crosses THRESH%. cron-driven, cheap no-op when fine.
+set -eu
+THRESH="${1:-85}"; L=/var/log/disk-guard.log
+use() { df / | awk 'NR==2{gsub(/%/,"",$5); print $5}'; }
+U=$(use); [ "$U" -lt "$THRESH" ] && exit 0
+echo "$(date '+%F %T') disk ${U}% >= ${THRESH}% -> reclaim" >> "$L"
+apt-get clean 2>/dev/null || true
+journalctl --vacuum-size=200M >>"$L" 2>&1 || true
+docker image prune -f   >>"$L" 2>&1 || true
+docker builder prune -f >>"$L" 2>&1 || true
+echo "$(date '+%F %T') after reclaim: $(use)%" >> "$L"
+DGUARD
+chmod +x /usr/local/sbin/disk-guard.sh
+if ! crontab -l 2>/dev/null | grep -q 'disk-guard'; then
+  { crontab -l 2>/dev/null || true; echo '17 * * * * /usr/local/sbin/disk-guard.sh 85'; } | crontab -
+fi
+ok "journald cap 200M + disk-guard (hourly, threshold 85%)"
+
 # ── Параллельный pre-pull nginx-related образов (для фазы 5) ─────────────────
 info "Качаем docker-образы в фоне..."
 PULL_PIDS=()
