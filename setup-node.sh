@@ -9,6 +9,8 @@
 # Флаги:
 #   --secret-key "..."   SECRET_KEY ноды (обязательный, из панели Remnawave)
 #   --with-bridges       открыть порты 7443-7447 для мостов RU→Foreign
+#   --ru-bridge          xHTTP-only RU-мост: открыть ТОЛЬКО SSH/mgmt/443/metrics
+#                        (без direct-VPN 2053/8443/6443/7443/7444/2096) — узкая attack surface
 #   --cf-token "xxx"     Cloudflare API token для выпуска wildcard cert
 #                          *.vinnypuxtomoon.today через acme.sh + DNS-01.
 #                          Опционально (для selfsteal/bridge нод).
@@ -121,6 +123,7 @@ SECRET_KEY=$(printf '%q' "$SECRET_KEY")
 SSH_PORT=$(printf '%q' "$SSH_PORT")
 SKIP_UPDATE=$(printf '%q' "$SKIP_UPDATE")
 WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
+RU_BRIDGE=$(printf '%q' "$RU_BRIDGE")
 F2B_IGNOREIP=$(printf '%q' "$F2B_IGNOREIP")
 CF_Token=$(printf '%q' "$CF_Token")
 EOF
@@ -402,6 +405,7 @@ SECRET_KEY=""
 SSH_PORT="22"
 SKIP_UPDATE="false"
 WITH_BRIDGES="false"
+RU_BRIDGE="false"   # xHTTP-only RU-мост: открываем лишь SSH/mgmt/443/metrics (см --ru-bridge)
 F2B_IGNOREIP="${F2B_IGNOREIP:-}"  # доп. admin/dev IP|CIDR для fail2ban ignoreip (через --f2b-ignoreip; НЕ хардкодить в репо)
 CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
 PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
@@ -420,6 +424,7 @@ while [[ $# -gt 0 ]]; do
     --node-port)      NODE_PORT="$2";     shift 2 ;;
     --no-update)      SKIP_UPDATE="true"; shift ;;
     --with-bridges)   WITH_BRIDGES="true"; shift ;;
+    --ru-bridge)      RU_BRIDGE="true";   shift ;;
     --f2b-ignoreip)   F2B_IGNOREIP="$2";  shift 2 ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
@@ -700,12 +705,16 @@ ufw default allow outgoing > /dev/null
 ufw allow "$SSH_PORT"/tcp   comment "SSH"        > /dev/null
 ufw allow "$NODE_PORT"/tcp  comment "mgmt"       > /dev/null
 ufw allow 443/tcp           comment "HTTPS"      > /dev/null
-ufw allow 2053/tcp          comment "HTTPS-cf"   > /dev/null
-ufw allow 8443/tcp          comment "HTTPS-alt"  > /dev/null
-ufw allow 6443/tcp          comment "edge"       > /dev/null
-ufw allow 7443/tcp          comment "trojan"     > /dev/null
-ufw allow 7444/tcp          comment "grpc"       > /dev/null
-ufw allow 2096/udp          comment "hysteria2"  > /dev/null
+# RU-bridge (xHTTP-only) ноды слушают лишь :443 (nginx stream→xray :4444) →
+# direct-VPN порты им не нужны; --ru-bridge их не открывает (сужаем attack surface).
+if [[ "$RU_BRIDGE" != "true" ]]; then
+  ufw allow 2053/tcp          comment "HTTPS-cf"   > /dev/null
+  ufw allow 8443/tcp          comment "HTTPS-alt"  > /dev/null
+  ufw allow 6443/tcp          comment "edge"       > /dev/null
+  ufw allow 7443/tcp          comment "trojan"     > /dev/null
+  ufw allow 7444/tcp          comment "grpc"       > /dev/null
+  ufw allow 2096/udp          comment "hysteria2"  > /dev/null
+fi
 # wombat (docker bridge 172.18.x) → xray :4443 cdn-xhttp inbound
 ufw allow from 172.16.0.0/12 to any port 4443 proto tcp comment "cdn-xhttp internal" > /dev/null
 ufw allow "$NODE_EXPORTER_PORT"/tcp comment "metrics" > /dev/null
@@ -716,7 +725,11 @@ if [[ "$WITH_BRIDGES" == "true" ]]; then
 fi
 
 ufw --force enable > /dev/null
-ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 2053, 8443, 6443, 7443, 7444, 2096/udp, metrics($NODE_EXPORTER_PORT)"
+if [[ "$RU_BRIDGE" == "true" ]]; then
+  ok "UFW (RU-bridge, xHTTP-only): SSH($SSH_PORT), mgmt($NODE_PORT), 443, 4443/internal, metrics($NODE_EXPORTER_PORT)"
+else
+  ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 2053, 8443, 6443, 7443, 7444, 2096/udp, metrics($NODE_EXPORTER_PORT)"
+fi
 
 # ─── Ingress edge filter ──────────────────────────────────────────────────────
 # Drop inbound traffic from a static set of known noisy/abusive source networks.
