@@ -919,7 +919,7 @@ cat > /etc/edge-deny.list <<'DENYLIST'
 95.167.87.66/32
 95.189.36.106/32
 DENYLIST
-install -m 755 /dev/stdin /usr/local/sbin/edge-deny-load <<'LOADER'
+cat > /usr/local/sbin/edge-deny-load <<'LOADER'
 #!/bin/bash
 L=/etc/edge-deny.list
 for c in iptables ip6tables; do
@@ -937,6 +937,7 @@ mkdir -p /etc/iptables
 iptables-save  > /etc/iptables/rules.v4 2>/dev/null
 ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
 LOADER
+chmod 755 /usr/local/sbin/edge-deny-load
 /usr/local/sbin/edge-deny-load || true
 if ! crontab -l 2>/dev/null | grep -q 'edge-deny-load'; then
   # Note: { ... || true; ... } необходим — под `set -euo pipefail` пустой crontab
@@ -1151,17 +1152,22 @@ systemctl is-active --quiet docker || systemctl start docker
 # Идемпотентно: создаём только если daemon.json отсутствует.
 if [[ ! -f /etc/docker/daemon.json ]]; then
   info "Настраиваем лимит Docker JSON-логов (50m × 5 на контейнер)..."
+  # registry-mirrors: Docker Hub режет anonymous pull-лимитом RU-IP (429 Too Many
+  # Requests, особенно на recycled-IP от Timeweb) → build падает. Зеркало
+  # dockerhub.timeweb.cloud проксирует docker.io без лимита; Docker пробует его
+  # первым и падает обратно на docker.io, если зеркало недоступно (safe для foreign-нод).
   cat > /etc/docker/daemon.json << 'DOCKERCFG'
 {
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "50m",
     "max-file": "5"
-  }
+  },
+  "registry-mirrors": ["https://dockerhub.timeweb.cloud"]
 }
 DOCKERCFG
   systemctl restart docker > /dev/null 2>&1 || warn "docker restart failed"
-  ok "Docker log-opts установлены (max 250MB на контейнер)"
+  ok "Docker log-opts + registry-mirror (dockerhub.timeweb.cloud) установлены"
 fi
 
 # ── journald cap + disk-guard ───────────────────────────────────────────────
