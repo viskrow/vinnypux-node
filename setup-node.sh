@@ -1233,19 +1233,44 @@ mkdir -p "$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
 cat > /opt/potato-core/Dockerfile << 'POTATO_DOCKERFILE'
 FROM remnawave/node:latest
 USER root
-# Переименовать реальный xray binary + удалить симлинк-псевдоним rw-core + пропатчить пути.
-# Node 2.8.0 (Debian 13): перешёл на s6-overlay (supervisord выпилен). xray запускает s6-сервис,
-# и ровно 2 s6-файла зовут /usr/local/bin/rw-core (симлинк→xray): xray/run (exec core) и
-# init-env.sh (детект XRAY_CORE_VERSION). Их ОБЯЗАТЕЛЬНО патчить, иначе после `rm rw-core`
-# s6 execает несуществующий бинарь → xray не стартует (баг hvds-us 2026-07-08, s6-разбор).
-# main.js-патч xrayPath — косметика баннера; реальный спавн+детект версии живут в s6-скриптах.
-# program name / log-файлы ВНУТРИ контейнера остаются "xray" (снаружи через ps aux = webd).
-RUN mv /usr/local/bin/xray /usr/local/bin/webd && \
-    rm -f /usr/local/bin/rw-core && \
-    sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /opt/app/dist/main.js && \
+# Полная обфускация: бинарь + s6-сервис-дерево + process.title агента (task27 — host `ps`
+# палил кейворды `s6-supervise xray`, `xray-log`, `/var/log/xray`, `rw-node`).
+# Node 2.8.0 (Debian 13): s6-overlay (supervisord выпилен). Патчим по шагам:
+#   1) бинарь xray→webd, rm симлинк rw-core;
+#   2) ссылки rw-core→webd в xray/run + init-env.sh (иначе s6 execает несуществующий бинарь →
+#      xray не стартует, баг hvds-us 2026-07-08). ПАТЧИМ ДО переименования папки (путь .../xray/run);
+#   3) main.js: xrayPath (косметика баннера) + process.title "rw-node"→"webd-agent"
+#      (агент = CMD `node dist/main.js`, его имя в host ps задаётся process.title) +
+#      s6-control-путь /run/service/xray→/run/service/webd и лог-тейл /var/log/xray→/var/log/webd
+#      (агент хардкодит имя s6-сервиса `xray` для control-сокета `${dir}/supervise/control`+s6-svc
+#      и тейлит /var/log/xray/current; без синхронизации: "s6 xray control socket not found, exiting");
+#   4) init-env.sh: дремлющая CUSTOM_CORE_URL-ветка тоже писала /usr/local/bin/xray;
+#   5) s6-сервисы xray→webd / xray-log→webd-log: папки + user/contents.d маркеры +
+#      producer/consumer/pipeline-name связки + лог /var/log/xray→/var/log/webd + mkdir.
+# ⚠ s6-rc компилируется при СТАРТЕ контейнера из s6-rc.d/ → producer/consumer/pipeline-name
+#   ДОЛЖНЫ быть согласованы, иначе s6-rc-compile падает и контейнер не встаёт (тест на 1 ноде!).
+RUN set -e; \
+    mv /usr/local/bin/xray /usr/local/bin/webd; \
+    rm -f /usr/local/bin/rw-core; \
     sed -i 's|/usr/local/bin/rw-core|/usr/local/bin/webd|g' \
         /etc/s6-overlay/s6-rc.d/xray/run \
-        /etc/s6-overlay/scripts/init-env.sh
+        /etc/s6-overlay/scripts/init-env.sh; \
+    sed -i -e 's|/usr/local/bin/xray|/usr/local/bin/webd|g' \
+           -e 's|process.title="rw-node"|process.title="webd-agent"|' \
+           -e 's|/run/service/xray|/run/service/webd|g' \
+           -e 's|/var/log/xray|/var/log/webd|g' \
+        /opt/app/dist/main.js; \
+    sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /etc/s6-overlay/scripts/init-env.sh; \
+    cd /etc/s6-overlay/s6-rc.d; \
+    mv xray webd; \
+    mv xray-log webd-log; \
+    mv user/contents.d/xray user/contents.d/webd; \
+    mv user/contents.d/xray-log user/contents.d/webd-log; \
+    echo webd-log > webd/producer-for; \
+    echo webd > webd-log/consumer-for; \
+    echo webd-pipeline > webd-log/pipeline-name; \
+    sed -i 's|/var/log/xray|/var/log/webd|' webd-log/run; \
+    mkdir -p /var/log/webd
 POTATO_DOCKERFILE
 
 cat > /opt/potato-core/docker-compose.yml << EOF
