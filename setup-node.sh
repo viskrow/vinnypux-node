@@ -10,7 +10,7 @@
 #   --secret-key "..."   SECRET_KEY ноды (обязательный, из панели Remnawave)
 #   --with-bridges       открыть порты 7443-7447 для мостов RU→Foreign
 #   --ru-bridge          xHTTP-only RU-мост: открыть ТОЛЬКО SSH/mgmt/443/metrics
-#                        (без direct-VPN 2053/8443/6443/7443/7444/2096) — узкая attack surface
+#                        (без direct-VPN 2053/7443/7444/2096) — узкая attack surface
 #   --cf-token "xxx"     Cloudflare API token для выпуска wildcard cert
 #                          *.vinnypuxtomoon.today через acme.sh + DNS-01.
 #                          Опционально (для selfsteal/bridge нод).
@@ -709,8 +709,6 @@ ufw allow 443/tcp           comment "HTTPS"      > /dev/null
 # direct-VPN порты им не нужны; --ru-bridge их не открывает (сужаем attack surface).
 if [[ "$RU_BRIDGE" != "true" ]]; then
   ufw allow 2053/tcp          comment "HTTPS-cf"   > /dev/null
-  ufw allow 8443/tcp          comment "HTTPS-alt"  > /dev/null
-  ufw allow 6443/tcp          comment "edge"       > /dev/null
   ufw allow 7443/tcp          comment "trojan"     > /dev/null
   ufw allow 7444/tcp          comment "grpc"       > /dev/null
   ufw allow 2096/udp          comment "hysteria2"  > /dev/null
@@ -728,7 +726,7 @@ ufw --force enable > /dev/null
 if [[ "$RU_BRIDGE" == "true" ]]; then
   ok "UFW (RU-bridge, xHTTP-only): SSH($SSH_PORT), mgmt($NODE_PORT), 443, 4443/internal, metrics($NODE_EXPORTER_PORT)"
 else
-  ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 2053, 8443, 6443, 7443, 7444, 2096/udp, metrics($NODE_EXPORTER_PORT)"
+  ok "UFW: SSH($SSH_PORT), mgmt($NODE_PORT), 443, 2053, 7443, 7444, 2096/udp, metrics($NODE_EXPORTER_PORT)"
 fi
 
 # ─── Ingress edge filter ──────────────────────────────────────────────────────
