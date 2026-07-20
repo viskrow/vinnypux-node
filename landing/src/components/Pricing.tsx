@@ -1,132 +1,149 @@
-import { useScrollReveal } from '../hooks/useScrollReveal'
-import { AuthView } from '../App'
-
-interface Props {
-  onAuth: (view: AuthView) => void
-}
+import { Badge, Box, Button, Card, Container, Divider, Group, List, Stack, Text, ThemeIcon, Title } from '@mantine/core'
+import { IconCheck } from '@tabler/icons-react'
+import { useAccess } from '../access'
 
 const plans = [
   {
-    name: 'Starter',
-    price: '0',
-    desc: 'Perfect for personal projects and exploration.',
+    name: 'Старт',
+    price: '4 900',
+    unit: '₽ / мес',
+    desc: 'Для небольших проектов и запуска эфиров.',
     featured: false,
+    cta: 'Запросить доступ',
     features: [
-      '200 requests / day',
-      '1 workspace',
-      'GPT-4o mini access',
-      'Community support',
-      'REST API access',
+      '2 ТБ трафика включено',
+      'До 5 одновременных потоков',
+      'HLS / DASH раздача',
+      'Объектное хранилище 100 ГБ',
+      'Поддержка по email',
     ],
-    cta: 'Get Started Free',
-    view: 'signup' as AuthView,
   },
   {
-    name: 'Pro',
-    price: '24',
-    desc: 'For teams that move fast and ship often.',
+    name: 'Бизнес',
+    price: '19 900',
+    unit: '₽ / мес',
+    desc: 'Для медиа и сервисов с постоянной нагрузкой.',
     featured: true,
+    cta: 'Запросить доступ',
     features: [
-      'Unlimited requests',
-      '20 workspaces',
-      'All models including GPT-4o',
-      'Priority support',
-      'Advanced analytics',
-      'Custom system prompts',
+      '15 ТБ трафика включено',
+      'Без лимита одновременных потоков',
+      'Транскодирование в лету',
+      'Объектное хранилище 1 ТБ',
+      'Приоритетная поддержка 24/7',
+      'API, вебхуки и метрики',
     ],
-    cta: 'Start Free Trial',
-    view: 'signup' as AuthView,
   },
   {
-    name: 'Enterprise',
-    price: 'Custom',
-    desc: 'Dedicated infrastructure with enterprise SLA.',
+    name: 'Энтерпрайз',
+    price: 'Индивидуально',
+    unit: '',
+    desc: 'Выделенная ёмкость и SLA под ваш проект.',
     featured: false,
+    cta: 'Связаться с отделом продаж',
     features: [
-      'Everything in Pro',
-      'Dedicated compute',
-      'Custom fine-tuning',
-      '99.99% uptime SLA',
-      'SOC 2 Type II',
-      'Dedicated account manager',
+      'Всё из тарифа «Бизнес»',
+      'Выделенные PoP и ёмкость',
+      'Персональный аккаунт-менеджер',
+      'SLA 99,98% с компенсацией',
+      'Приватное подключение и BYOC',
     ],
-    cta: 'Contact Sales',
-    view: 'signup' as AuthView,
   },
 ]
 
-export default function Pricing({ onAuth }: Props) {
-  const titleRef = useScrollReveal<HTMLDivElement>()
-
+export default function Pricing() {
+  const openAccess = useAccess()
   return (
-    <section className="pricing" id="pricing">
-      <div className="container">
-        <div className="pricing-header" ref={titleRef}>
-          <div className="section-label">Pricing</div>
-          <h2 className="section-title">Simple, transparent pricing</h2>
-          <p className="section-sub">
-            Start free, scale as you grow. No hidden fees, no surprises.
-          </p>
-        </div>
+    <Box component="section" id="pricing" py={{ base: 70, sm: 100 }}>
+      <Container size="lg">
+        <Stack gap={14} align="center" ta="center" mb={54}>
+          <Text tt="uppercase" fw={600} fz="xs" c="brand.4" style={{ letterSpacing: '0.12em' }}>
+            Тарифы
+          </Text>
+          <Title order={2} fz={{ base: 30, sm: 44 }} style={{ letterSpacing: '-0.02em' }}>
+            Прозрачные цены, оплата в рублях
+          </Title>
+          <Text c="dimmed" fz="lg" maw={520}>
+            Трафик сверх пакета — от 0,9 ₽/ГБ. Без скрытых платежей, счёт и закрывающие документы.
+          </Text>
+        </Stack>
 
-        <div className="pricing-grid">
-          {plans.map(({ name, price, desc, featured, features, cta, view }, i) => (
-            <PricingCard
-              key={name}
-              name={name}
-              price={price}
-              desc={desc}
-              featured={featured}
-              features={features}
-              cta={cta}
-              delay={i * 80}
-              onAuth={() => onAuth(view)}
-            />
+        <Group align="stretch" gap="md" justify="center" wrap="wrap">
+          {plans.map((p) => (
+            <Card
+              key={p.name}
+              padding="xl"
+              radius="lg"
+              withBorder
+              w={{ base: '100%', sm: 320 }}
+              maw={360}
+              style={{
+                position: 'relative',
+                background: p.featured ? 'rgba(34, 211, 238, 0.06)' : 'rgba(255,255,255,0.02)',
+                borderColor: p.featured ? 'var(--mantine-color-brand-7)' : undefined,
+              }}
+            >
+              {p.featured && (
+                <Badge
+                  color="brand"
+                  variant="filled"
+                  radius="xl"
+                  style={{ position: 'absolute', top: -12, left: '50%', transform: 'translateX(-50%)' }}
+                >
+                  Популярный
+                </Badge>
+              )}
+
+              <Text tt="uppercase" fw={600} fz="xs" c="dimmed" style={{ letterSpacing: '0.08em' }}>
+                {p.name}
+              </Text>
+
+              <Group gap={6} align="baseline" mt={10} mb={4}>
+                <Text fz={p.price.length > 8 ? 26 : 34} fw={800} style={{ letterSpacing: '-0.03em' }}>
+                  {p.price}
+                </Text>
+                {p.unit && (
+                  <Text c="dimmed" fz="sm">
+                    {p.unit}
+                  </Text>
+                )}
+              </Group>
+
+              <Text c="dimmed" fz="sm" mih={40}>
+                {p.desc}
+              </Text>
+
+              <Divider my="md" />
+
+              <List
+                spacing={10}
+                fz="sm"
+                c="dimmed"
+                center
+                icon={
+                  <ThemeIcon color="brand" variant="light" size={18} radius="xl">
+                    <IconCheck size={12} stroke={2.6} />
+                  </ThemeIcon>
+                }
+              >
+                {p.features.map((f) => (
+                  <List.Item key={f}>{f}</List.Item>
+                ))}
+              </List>
+
+              <Button
+                fullWidth
+                mt="xl"
+                radius="md"
+                variant={p.featured ? 'filled' : 'default'}
+                onClick={openAccess}
+              >
+                {p.cta}
+              </Button>
+            </Card>
           ))}
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function PricingCard({
-  name, price, desc, featured, features, cta, delay, onAuth,
-}: {
-  name: string; price: string; desc: string; featured: boolean
-  features: string[]; cta: string; delay: number; onAuth: () => void
-}) {
-  const ref = useScrollReveal<HTMLDivElement>(delay)
-  return (
-    <div className={`pricing-card${featured ? ' featured' : ''}`} ref={ref}>
-      {featured && <div className="pricing-badge">Most Popular</div>}
-      <div className="pricing-name">{name}</div>
-      <div className="pricing-price">
-        {price === 'Custom' ? (
-          <span className="amount" style={{ fontSize: '2rem' }}>Custom</span>
-        ) : (
-          <>
-            <span style={{ fontSize: '1.4rem', color: 'var(--text-muted)', alignSelf: 'flex-start', marginTop: 8 }}>$</span>
-            <span className="amount">{price}</span>
-            <span className="period">/mo</span>
-          </>
-        )}
-      </div>
-      <p className="pricing-desc">{desc}</p>
-      <div className="pricing-divider" />
-      <ul className="pricing-features">
-        {features.map(f => (
-          <li key={f} className="pricing-feature">
-            <span className="pricing-check on">✓</span>
-            {f}
-          </li>
-        ))}
-      </ul>
-      <button
-        className={`btn ${featured ? 'btn-primary' : 'btn-outline'}`}
-        onClick={onAuth}
-      >
-        {cta}
-      </button>
-    </div>
+        </Group>
+      </Container>
+    </Box>
   )
 }

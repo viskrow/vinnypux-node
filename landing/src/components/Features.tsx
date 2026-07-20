@@ -1,69 +1,88 @@
-import { useScrollReveal } from '../hooks/useScrollReveal'
+import { Box, Card, Container, SimpleGrid, Stack, Text, ThemeIcon, Title } from '@mantine/core'
+import {
+  IconBroadcast,
+  IconMovie,
+  IconBolt,
+  IconDatabase,
+  IconTransform,
+  IconApi,
+} from '@tabler/icons-react'
 
 const features = [
   {
-    icon: '⚡',
-    color: 'rgba(251, 191, 36, 0.15)',
-    title: 'Instant Responses',
-    desc: 'Multi-model inference pipeline with real-time context understanding. Sub-100ms p95 latency across all regions.',
+    icon: IconBroadcast,
+    title: 'Live-стриминг',
+    desc: 'Приём по RTMP / SRT / WebRTC, раздача в HLS и LL-DASH. Задержка от 2 секунд, авто-битрейт под канал зрителя.',
   },
   {
-    icon: '🛡️',
-    color: 'rgba(34, 211, 238, 0.12)',
-    title: 'Zero-Knowledge Privacy',
-    desc: 'End-to-end encryption with zero-knowledge architecture. Your prompts and data never leave your control.',
+    icon: IconMovie,
+    title: 'VOD-доставка',
+    desc: 'Хранение и отдача видео-по-запросу с edge-кэшированием. Догрев популярного контента, мгновенный старт воспроизведения.',
   },
   {
-    icon: '🔄',
-    color: 'rgba(139, 92, 246, 0.15)',
-    title: 'Seamless Integration',
-    desc: 'REST API, GraphQL, and native SDKs for Python, TypeScript, Go and Rust. Drop-in replacement for existing workflows.',
+    icon: IconBolt,
+    title: 'Мульти-CDN и edge',
+    desc: 'Агрегируем несколько CDN-сетей и собственные узлы — 47 точек присутствия по РФ и СНГ. Автовыбор лучшего маршрута и отказоустойчивость: если один CDN просел, трафик уходит на другой.',
   },
   {
-    icon: '🌐',
-    color: 'rgba(52, 211, 153, 0.12)',
-    title: 'Global Infrastructure',
-    desc: 'Distributed across 40+ edge nodes worldwide. Automatic failover and region-based routing for peak performance.',
+    icon: IconDatabase,
+    title: 'Объектное хранилище',
+    desc: 'S3-совместимое хранилище для исходников и сегментов. Оплата за объём, без лимита на количество файлов.',
+  },
+  {
+    icon: IconTransform,
+    title: 'Транскодирование',
+    desc: 'Перекодирование в лету в нужные профили и кодеки (H.264 / H.265 / AV1). Водяные знаки, нарезка на сегменты.',
+  },
+  {
+    icon: IconApi,
+    title: 'API и SDK',
+    desc: 'REST-API, вебхуки и SDK для управления потоками, кэшем и статистикой. Инвалидация кэша и метрики в реальном времени.',
   },
 ]
 
 export default function Features() {
-  const titleRef = useScrollReveal<HTMLDivElement>()
-
   return (
-    <section className="features" id="features">
-      <div className="container">
-        <div className="features-header" ref={titleRef}>
-          <div className="section-label">Capabilities</div>
-          <h2 className="section-title">
-            Everything you need<br />to ship faster
-          </h2>
-          <p className="section-sub">
-            Purpose-built tools that integrate into your stack and scale with your team.
-          </p>
-        </div>
+    <Box component="section" id="features" py={{ base: 70, sm: 100 }}>
+      <Container size="lg">
+        <Stack gap={14} mb={54}>
+          <Text tt="uppercase" fw={600} fz="xs" c="brand.4" style={{ letterSpacing: '0.12em' }}>
+            Возможности
+          </Text>
+          <Title order={2} fz={{ base: 30, sm: 44 }} maw={620} style={{ letterSpacing: '-0.02em' }}>
+            Всё для доставки видео в одной платформе
+          </Title>
+          <Text c="dimmed" fz="lg" maw={560}>
+            От приёма прямого эфира до отдачи готовых сегментов на ближайшей к зрителю ноде —
+            поверх мульти-CDN, без десятка отдельных договоров.
+          </Text>
+        </Stack>
 
-        <div className="features-grid">
-          {features.map(({ icon, color, title, desc }, i) => (
-            <FeatureCard key={title} icon={icon} color={color} title={title} desc={desc} delay={i * 80} />
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md">
+          {features.map((f) => (
+            <Card
+              key={f.title}
+              padding="xl"
+              radius="lg"
+              withBorder
+              style={{
+                background: 'rgba(255,255,255,0.02)',
+                transition: 'transform 0.25s ease, border-color 0.25s ease',
+              }}
+            >
+              <ThemeIcon size={48} radius="md" variant="light" color="brand" mb="md">
+                <f.icon size={26} stroke={1.7} />
+              </ThemeIcon>
+              <Text fw={700} fz="lg" mb={8}>
+                {f.title}
+              </Text>
+              <Text c="dimmed" fz="sm" lh={1.6}>
+                {f.desc}
+              </Text>
+            </Card>
           ))}
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function FeatureCard({
-  icon, color, title, desc, delay,
-}: {
-  icon: string; color: string; title: string; desc: string; delay: number
-}) {
-  const ref = useScrollReveal<HTMLDivElement>(delay)
-  return (
-    <div className="feature-card" ref={ref}>
-      <div className="feature-icon" style={{ background: color }}>{icon}</div>
-      <h3>{title}</h3>
-      <p>{desc}</p>
-    </div>
+        </SimpleGrid>
+      </Container>
+    </Box>
   )
 }

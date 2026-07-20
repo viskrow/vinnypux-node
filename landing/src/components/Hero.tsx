@@ -1,37 +1,62 @@
-import { AuthView } from '../App'
+import { Badge, Box, Button, Container, Group, Stack, Text, Title } from '@mantine/core'
+import { IconArrowRight } from '@tabler/icons-react'
+import { Link } from 'react-router-dom'
+import { brand } from '../brand'
+import { useAccess } from '../access'
 
-interface Props {
-  onAuth: (view: AuthView) => void
-}
-
-export default function Hero({ onAuth }: Props) {
+export default function Hero() {
+  const openAccess = useAccess()
   return (
-    <section className="hero">
-      <div className="container">
-        <div className="hero-badge">
-          <span className="hero-badge-dot" />
-          New · Advanced AI Engine v3.2 Released
-        </div>
+    <Box
+      component="section"
+      pt={{ base: 120, sm: 160 }}
+      pb={{ base: 60, sm: 90 }}
+      style={{ minHeight: '100vh', display: 'flex', alignItems: 'center' }}
+    >
+      <Container size="lg" w="100%">
+        <Stack align="center" gap="xl" ta="center">
+          <Badge
+            size="lg"
+            radius="xl"
+            variant="light"
+            color="brand"
+            leftSection={<Box w={7} h={7} bg="brand.4" style={{ borderRadius: '50%' }} />}
+          >
+            Новая точка присутствия: Новосибирск
+          </Badge>
 
-        <h1>
-          Intelligence,<br />
-          <span className="gradient-text">Delivered Instantly</span>
-        </h1>
+          <Title order={1} fz={{ base: 42, sm: 68 }} maw={880} lh={1.06} style={{ letterSpacing: '-0.03em' }}>
+            {brand.tagline.split(' ').slice(0, 2).join(' ')}{' '}
+            <Text span inherit className="grad-text">
+              {brand.tagline.split(' ').slice(2).join(' ')}
+            </Text>
+          </Title>
 
-        <p className="hero-sub">
-          Vinnypux AI brings the power of advanced language models to your fingertips.
-          Automate workflows, generate insights, and accelerate everything you do.
-        </p>
+          <Text c="dimmed" fz={{ base: 'md', sm: 'xl' }} maw={620} lh={1.65}>
+            {brand.lead}
+          </Text>
 
-        <div className="hero-actions">
-          <button className="btn btn-primary" onClick={() => onAuth('signup')}>
-            Get Started — It's Free
-          </button>
-          <button className="btn btn-outline hero-arrow" onClick={() => onAuth('signin')}>
-            Sign In <span>→</span>
-          </button>
-        </div>
-      </div>
-    </section>
+          <Group gap="sm" justify="center" mt="sm">
+            <Button size="lg" radius="md" onClick={openAccess}>
+              Запросить доступ
+            </Button>
+            <Button
+              size="lg"
+              radius="md"
+              variant="default"
+              component={Link}
+              to="/docs"
+              rightSection={<IconArrowRight size={18} />}
+            >
+              Документация
+            </Button>
+          </Group>
+
+          <Text c="dimmed" fz="sm" mt="xs">
+            Тестовый период 14 дней · без карты · подключение за час
+          </Text>
+        </Stack>
+      </Container>
+    </Box>
   )
 }
