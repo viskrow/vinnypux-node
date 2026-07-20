@@ -1207,6 +1207,32 @@ if ! crontab -l 2>/dev/null | grep -q 'disk-guard'; then
 fi
 ok "journald cap 200M + disk-guard (hourly, threshold 85%)"
 
+# ── swap (anti-OOM commit-relief; размер по RAM+диску, НЕ хардкод) ────────────
+# xray под нагрузкой раздувает total-vm → global-OOM убивает webd. Swap поднимает
+# commit-limit (проблема в total-vm, не в RSS) + резерв при пиковом накоплении.
+# Размер: RAM/2, клэмп [1G,4G], но ≤30% свободного диска (мелкие диски типа CDNvideo
+# 8.7G не переполнять). Пропуск если swap уже есть / диска <4G. swappiness=10 (см sysctl).
+if swapon --show 2>/dev/null | grep -q .; then
+  ok "swap уже активен — пропуск"
+else
+  FREE_MB=$(df -Pm / | awk 'NR==2{print $4}')
+  SWAP_MB=$(( RAM_MB / 2 ))
+  [ "$SWAP_MB" -lt 1024 ] && SWAP_MB=1024
+  [ "$SWAP_MB" -gt 4096 ] && SWAP_MB=4096
+  MAX_DISK=$(( FREE_MB * 30 / 100 ))
+  [ "$SWAP_MB" -gt "$MAX_DISK" ] && SWAP_MB=$MAX_DISK
+  if [ "$FREE_MB" -lt 4096 ] || [ "$SWAP_MB" -lt 1024 ]; then
+    warn "swap пропущен: мало свободного диска (${FREE_MB}M) — anti-OOM = только GOMEMLIMIT"
+  elif dd if=/dev/zero of=/swapfile bs=1M count="$SWAP_MB" status=none 2>/dev/null \
+       && chmod 600 /swapfile && mkswap /swapfile >/dev/null 2>&1 && swapon /swapfile 2>/dev/null; then
+    grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    ok "swap ${SWAP_MB}M создан (RAM ${RAM_MB}M, free-disk ${FREE_MB}M)"
+  else
+    rm -f /swapfile 2>/dev/null || true
+    warn "swap не создался — пропуск (anti-OOM = GOMEMLIMIT)"
+  fi
+fi
+
 # ── Параллельный pre-pull nginx-related образов (для фазы 5) ─────────────────
 info "Качаем docker-образы в фоне..."
 PULL_PIDS=()
@@ -1300,8 +1326,14 @@ services:
         max-file: "5"
 EOF
 
-printf 'NODE_PORT=%s\nSECRET_KEY=%s\n' "$NODE_PORT" "$SECRET_KEY" > /opt/potato-core/.env
+# GOMEMLIMIT: xray=Go, дефолт-GC ленив + отдаёт память OS лениво (madvise) → на долгом
+# аптайме RSS раздувается до OOM-kill (webd убит, docker restart=0 маскирует s6-рестарт
+# ВНУТРИ контейнера). Мягкий потолок = 65% RAM (heap ниже OOM-точки RAM−~2G, GC чистит
+# заранее). От факт-RAM, не хардкод. Verified cdnvideo-4 (7.9G→5G): RSS 4.8→1.8G, 0 OOM.
+GOMEM_MB=$(( RAM_MB * 65 / 100 )); [ "$GOMEM_MB" -lt 1536 ] && GOMEM_MB=1536
+printf 'NODE_PORT=%s\nSECRET_KEY=%s\nGOMEMLIMIT=%sMiB\n' "$NODE_PORT" "$SECRET_KEY" "$GOMEM_MB" > /opt/potato-core/.env
 chmod 600 /opt/potato-core/.env
+ok "GOMEMLIMIT=${GOMEM_MB}MiB (65% от RAM ${RAM_MB}M) — anti-OOM для webd"
 
 # Идемпотентно: каждый запуск скрипта пересобирает образ (Dockerfile мог
 # обновиться между запусками), compose сам решает пересоздавать ли контейнер
