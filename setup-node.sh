@@ -557,6 +557,11 @@ net.ipv4.tcp_congestion_control = bbr
 # ── TCP буферы (под RAM: ${RAM_MB}MB) ─────────
 net.core.rmem_max = ${BUF}
 net.core.wmem_max = ${BUF}
+# rmem/wmem_max = ПОТОЛОК (приложение опт-инит через setsockopt). UDP-relay сокеты xray (freedom-out,
+# проксирование юзерского QUIC/HTTP3) SO_RCVBUF НЕ ставят → берут rmem_DEFAULT; дефолт ядра 208КБ мал →
+# QUIC-burst переполняет буфер → RcvbufErrors (дропы→ретрансмиты). Поднимаем default (fleet-check 2026-07-21).
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
 net.core.optmem_max = 65536
 net.ipv4.tcp_rmem = 4096 87380 ${BUF}
 net.ipv4.tcp_wmem = 4096 65536 ${BUF}
