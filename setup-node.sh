@@ -153,6 +153,19 @@ install_resume_service() {
   fi
 
   chmod +x "$SCRIPT_PATH"
+
+  # Глобальная страховка от 90с DefaultTimeoutStartSec: длинные фазы установки (docker
+  # builds + acme, >90с) убивались systemd-дефолтом, если resume-юнит оказывался БЕЗ
+  # per-unit TimeoutStartSec=infinity (нода на старой версии скрипта / ручной деплой).
+  # Прецедент: cdnvideo-4 (=0) и MWS-нода (07-25) обе словили 90с-смерть на фазе beeper.
+  # Глобальный дефолт спасает resume-юнит ЛЮБОЙ версии: после ребута PID1 перечитывает
+  # system.conf.d → применяется. Убирается в remove_resume_service при успехе.
+  mkdir -p /etc/systemd/system.conf.d
+  cat > /etc/systemd/system.conf.d/99-resume-timeout.conf << 'EOF'
+[Manager]
+DefaultTimeoutStartSec=infinity
+EOF
+
   cat > "/etc/systemd/system/${RESUME_SERVICE}.service" << EOF
 [Unit]
 Description=Node Setup — resume after reboot
@@ -184,6 +197,7 @@ EOF
 remove_resume_service() {
   systemctl disable "${RESUME_SERVICE}.service" > /dev/null 2>&1 || true
   rm -f "/etc/systemd/system/${RESUME_SERVICE}.service"
+  rm -f "/etc/systemd/system.conf.d/99-resume-timeout.conf"  # снять глобальную start-timeout-страховку (нужна только на время установки)
   rm -f "$STATE_FILE" "$SCRIPT_PATH"
   systemctl daemon-reload 2>/dev/null || true
 }
