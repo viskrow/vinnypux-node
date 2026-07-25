@@ -53,6 +53,7 @@ vbk*/
 *.pem
 *.p12
 *.pfx
+/wg0.conf
 *.crt
 id_rsa
 id_ed25519
