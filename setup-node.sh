@@ -422,6 +422,8 @@ WITH_BRIDGES="false"
 RU_BRIDGE="false"   # xHTTP-only RU-мост: открываем лишь SSH/mgmt/443/metrics (см --ru-bridge)
 F2B_IGNOREIP="${F2B_IGNOREIP:-}"  # доп. admin/dev IP|CIDR для fail2ban ignoreip (через --f2b-ignoreip; НЕ хардкодить в репо)
 CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
+NO_WOMBAT="false"   # --no-wombat: не поднимать wombat (coexist с чужим стеком на :80/:443, напр. Guardora)
+EXTRA_PORTS=""      # --extra-ports "53,80,8443": доп. ufw-allow (порты параллельного стека + наши нестандартные)
 PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
 
 # Загружаем сохранённое состояние (resume после ребута)
@@ -441,6 +443,8 @@ while [[ $# -gt 0 ]]; do
     --ru-bridge)      RU_BRIDGE="true";   shift ;;
     --f2b-ignoreip)   F2B_IGNOREIP="$2";  shift 2 ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
+    --no-wombat)      NO_WOMBAT="true";   shift ;;
+    --extra-ports)    EXTRA_PORTS="$2";   shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
   esac
 done
@@ -735,6 +739,17 @@ fi
 # wombat (docker bridge 172.18.x) → xray :4443 cdn-xhttp inbound
 ufw allow from 172.16.0.0/12 to any port 4443 proto tcp comment "cdn-xhttp internal" > /dev/null
 ufw allow "$NODE_EXPORTER_PORT"/tcp comment "metrics" > /dev/null
+
+# --extra-ports: доп. ufw-allow (coexist — сохранить порты параллельного стека типа
+# Guardora :53/:80/:10000/:20000 + открыть наши нестандартные, напр :8443). Без /tcp = tcp+udp.
+if [[ -n "$EXTRA_PORTS" ]]; then
+  IFS=',' read -ra _eps <<< "$EXTRA_PORTS"
+  for _ep in "${_eps[@]}"; do
+    _ep="${_ep// /}"; [[ -z "$_ep" ]] && continue
+    ufw allow "$_ep" comment "extra" > /dev/null
+  done
+  ok "extra-ports (coexist) открыты: $EXTRA_PORTS"
+fi
 
 if [[ "$WITH_BRIDGES" == "true" ]]; then
   ufw allow 7443:7447/tcp comment "relay" > /dev/null
@@ -1499,6 +1514,9 @@ if [[ ${#PULL_PIDS[@]} -gt 0 ]]; then
   wait "${PULL_PIDS[@]}" 2>/dev/null || true
 fi
 
+if [[ "$NO_WOMBAT" == "true" ]]; then
+  info "wombat пропущен (--no-wombat, coexist — :80/:443 держит параллельный стек)"
+else
 info "Собираем и запускаем wombat (nginx)..."
 # Очистка конкурентов на портах: старые compose-проекты до обфускации,
 # system nginx/apache, orphan-контейнеры — всё что захватило 80/443/9443.
@@ -1525,6 +1543,7 @@ if wait_container_running wombat 15; then
   ok "wombat запущен"
 else
   warn "wombat не запустился — проверь: cd $INSTALL_DIR && docker compose logs"
+fi
 fi
 
 # ─── Готово ───────────────────────────────────────────────────────────────────
