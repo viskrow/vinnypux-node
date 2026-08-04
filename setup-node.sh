@@ -519,32 +519,38 @@ else
 
   # GPG ключ XanMod (официальный метод: gitlab.com/afrd.gpg)
   wget -qO - https://gitlab.com/afrd.gpg | gpg --yes --dearmor \
-    -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null
-  # XanMod репо: с 2026 мигрировали с flat-suite "releases" (пустой) на codename-style.
-  XANMOD_SUITE=$(lsb_release -cs 2>/dev/null || echo noble)
-  echo "deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org $XANMOD_SUITE main" \
+    -o /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null || true
+  # XanMod suite: deb.xanmod.org держит НЕ codename бокса (jammy=404!), а rolling-suite
+  # (сейчас "noble", ядра distro-агностичны). Автодетект: первый suite с живым Release (HTTP 200).
+  XANMOD_SUITE=""
+  for _s in "$(lsb_release -cs 2>/dev/null)" noble releases stable; do
+    [[ -z "$_s" ]] && continue
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://deb.xanmod.org/dists/$_s/Release")" == "200" ]] \
+      && { XANMOD_SUITE="$_s"; break; }
+  done
+  info "XanMod suite: ${XANMOD_SUITE:-noble (fallback)}"
+  echo "deb [signed-by=/usr/share/keyrings/xanmod-archive-keyring.gpg] http://deb.xanmod.org ${XANMOD_SUITE:-noble} main" \
     > /etc/apt/sources.list.d/xanmod-release.list
   wait_apt_lock
-  apt_safe "update (xanmod)" apt-get update -qq
 
-  # Подбираем пакет под CPU-уровень с фолбэком вниз
+  # XanMod НЕ фатален: битый репо/suite/ключ → warn + skip на сток BBR1 (нода работает без BBRv3).
   XANMOD_PKG=""
-  for lvl in "$CPU_LEVEL" x64v3 x64v2 x64v1; do
-    XANMOD_PKG=$(apt-cache search "linux-image.*${lvl}.*xanmod" 2>/dev/null \
-      | { grep -v "\-rt\-" || true; } | sort -V | tail -1 | awk '{print $1}' || true)
-    [[ -n "$XANMOD_PKG" ]] && { info "Пакет: $XANMOD_PKG ($lvl)"; break; }
-  done
-  [[ -z "$XANMOD_PKG" ]] && die "Не найден пакет XanMod"
-
-  wait_apt_lock
-  apt_safe "install xanmod" apt-get install -y "$XANMOD_PKG"
-  ok "$XANMOD_PKG установлен"
-  NEED_REBOOT=true
-
-  # GRUB по умолчанию: 0 — самое верхнее в списке.
-  # XanMod (6.19+) обычно > stock (6.8.x) по dpkg-version, поэтому окажется первым.
-  # На всякий случай форсим update-grub.
-  update-grub > /dev/null 2>&1 || true
+  if apt-get update -qq 2>/dev/null; then
+    for lvl in "$CPU_LEVEL" x64v3 x64v2 x64v1; do
+      XANMOD_PKG=$(apt-cache search "linux-image.*${lvl}.*xanmod" 2>/dev/null \
+        | { grep -v "\-rt\-" || true; } | sort -V | tail -1 | awk '{print $1}' || true)
+      [[ -n "$XANMOD_PKG" ]] && { info "Пакет: $XANMOD_PKG ($lvl)"; break; }
+    done
+  fi
+  if [[ -n "$XANMOD_PKG" ]] && { wait_apt_lock; apt-get install -y "$XANMOD_PKG" > /dev/null 2>&1; }; then
+    ok "$XANMOD_PKG установлен"
+    NEED_REBOOT=true
+    update-grub > /dev/null 2>&1 || true   # XanMod (dpkg-version > stock) окажется первым в GRUB
+  else
+    warn "XanMod недоступен (битый репо/suite/ключ) — пропуск, остаёмся на стоке BBR1 (не критично)"
+    rm -f /etc/apt/sources.list.d/xanmod-release.list
+    apt-get update -qq 2>/dev/null || true
+  fi
 fi
 
 # ── 1.4. Один ребут (если apt upgrade обновил ядро ИЛИ установлен XanMod) ────
