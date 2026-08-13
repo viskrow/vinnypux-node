@@ -1307,7 +1307,9 @@ USER root
 #   1) бинарь xray→webd, rm симлинк rw-core;
 #   2) ссылки rw-core→webd в xray/run + init-env.sh (иначе s6 execает несуществующий бинарь →
 #      xray не стартует, баг hvds-us 2026-07-08). ПАТЧИМ ДО переименования папки (путь .../xray/run);
-#   3) main.js: xrayPath (косметика баннера) + process.title "rw-node"→"webd-agent"
+#   3) main.js: xrayPath (косметика баннера) + process.title "rw-node"→"webd-agent" +
+#      rw-core→webd-core + симлинк webd-core (агент 3.1.1 спавнит rw-core чтобы прочитать
+#      версию ядра; после rm симлинка = ENOENT → "XRay Core vnull" и прочерк версии в панели)
 #      (агент = CMD `node dist/main.js`, его имя в host ps задаётся process.title) +
 #      s6-control-путь /run/service/xray→/run/service/webd и лог-тейл /var/log/xray→/var/log/webd
 #      (агент хардкодит имя s6-сервиса `xray` для control-сокета `${dir}/supervise/control`+s6-svc
@@ -1327,7 +1329,9 @@ RUN set -e; \
            -e 's|process.title="rw-node"|process.title="webd-agent"|' \
            -e 's|/run/service/xray|/run/service/webd|g' \
            -e 's|/var/log/xray|/var/log/webd|g' \
+           -e 's|rw-core|webd-core|g' \
         /opt/app/dist/main.js; \
+    ln -sf /usr/local/bin/webd /usr/local/bin/webd-core; \
     sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /etc/s6-overlay/scripts/init-env.sh; \
     cd /etc/s6-overlay/s6-rc.d; \
     mv xray webd; \
@@ -1339,6 +1343,27 @@ RUN set -e; \
     echo webd-pipeline > webd-log/pipeline-name; \
     sed -i 's|/var/log/xray|/var/log/webd|' webd-log/run; \
     mkdir -p /var/log/webd
+
+# ── OBFUSCATION SELF-CHECK (2026-08-11) ───────────────────────────────────────
+# ЗАЧЕМ: все патчи выше — это `sed` по ВЫХЛОПУ сборщика агента. При смене сборщика
+# (2.8.0 webpack → 3.0.0 rspack/SWC) шаблон может перестать совпадать, а `sed -i` при
+# непопадании МОЛЧА ничего не делает: образ соберётся, контейнер встанет, и только в
+# host `ps` вылезет `rw-node`. Отказы асимметричны — s6-пути падают громко (агент
+# аборится), а process.title ломается беззвучно. Поэтому проверяем явно и валим сборку.
+RUN set -e; \
+    fail() { echo "OBFUSCATION CHECK FAILED: $1" >&2; exit 1; }; \
+    for kw in rw-node rw-core /run/service/xray /var/log/xray /usr/local/bin/xray; do \
+        grep -q -- "$kw" /opt/app/dist/main.js && fail "main.js всё ещё содержит '$kw'"; \
+    done; \
+    grep -q 'webd-agent' /opt/app/dist/main.js || fail "main.js: process.title не переименован"; \
+    [ -f /opt/app/dist/cli.js ] && { for kw in rw-node rw-core remnawave; do \
+        grep -q -- "$kw" /opt/app/dist/cli.js && fail "cli.js содержит '$kw'"; done; } || true; \
+    [ -d /etc/s6-overlay/s6-rc.d/webd ] || fail "s6: нет сервиса webd"; \
+    [ -d /etc/s6-overlay/s6-rc.d/xray ] && fail "s6: сервис xray не переименован"; \
+    [ -x /usr/local/bin/webd ] || fail "нет бинаря webd"; \
+    [ -e /usr/local/bin/xray ] && fail "бинарь xray не переименован"; \
+    [ -e /usr/local/bin/rw-core ] && fail "симлинк rw-core не убран"; \
+    echo "obfuscation check: OK"
 POTATO_DOCKERFILE
 
 cat > /opt/potato-core/docker-compose.yml << EOF
