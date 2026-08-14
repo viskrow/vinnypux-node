@@ -1333,10 +1333,13 @@ RUN set -e; \
         /opt/app/dist/main.js; \
     ln -sf /usr/local/bin/webd /usr/local/bin/webd-core; \
     sed -i 's|/usr/local/bin/xray|/usr/local/bin/webd|g' /etc/s6-overlay/scripts/init-env.sh; \
+    for h in /usr/local/bin/xerrors /usr/local/bin/xlogs; do \
+        [ -f "$h" ] && sed -i 's|/var/log/xray|/var/log/webd|g' "$h"; \
+    done; true; \
     cd /etc/s6-overlay/s6-rc.d; \
     mv xray webd; \
     mv xray-log webd-log; \
-    mv user/contents.d/xray user/contents.d/webd; \
+    { [ -e user/contents.d/xray ] && mv user/contents.d/xray user/contents.d/webd; } || true; \
     mv user/contents.d/xray-log user/contents.d/webd-log; \
     echo webd-log > webd/producer-for; \
     echo webd > webd-log/consumer-for; \
