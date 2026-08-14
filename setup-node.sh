@@ -195,6 +195,17 @@ EOF
 }
 
 remove_resume_service() {
+  # ⚠ Если мы САМИ крутимся из-под resume-юнита — нельзя сносить его файл и делать
+  # daemon-reload на лету: systemd перечитает конфигурацию, не найдёт юнита с
+  # TimeoutStartSec=infinity и прибьёт живой процесс по 90с-дефолту.
+  # Прецедент: турецкая нода 2026-08-14 — resume стартовал 12:12:41, убит 12:14:12
+  # ('timeout') прямо на установке Docker. Та же смерть раньше списывалась на
+  # «старую версию юнита» (cdnvideo-4, MWS 07-25). Уборку откладываем на после выхода.
+  if grep -qs "$RESUME_SERVICE" /proc/self/cgroup; then
+    systemd-run --on-active=20 --unit=sysboot-cleanup --quiet /bin/sh -c \
+      "systemctl disable ${RESUME_SERVICE}.service; rm -f /etc/systemd/system/${RESUME_SERVICE}.service /etc/systemd/system.conf.d/99-resume-timeout.conf '$STATE_FILE' '$SCRIPT_PATH'; systemctl daemon-reload" 2>/dev/null || true
+    return 0
+  fi
   systemctl disable "${RESUME_SERVICE}.service" > /dev/null 2>&1 || true
   rm -f "/etc/systemd/system/${RESUME_SERVICE}.service"
   rm -f "/etc/systemd/system.conf.d/99-resume-timeout.conf"  # снять глобальную start-timeout-страховку (нужна только на время установки)
