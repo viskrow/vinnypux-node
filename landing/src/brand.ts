@@ -6,7 +6,7 @@
 
 export const brand = {
   name: 'Streamora',
-  domain: 'streamora.cloud',
+  domain: 'stream-pop.net',
   tagline: 'Доставка видео и медиа без буферизации',
   lead:
     'Платформа доставки видео поверх мульти-CDN: стриминг, VOD и объектное хранилище ' +
@@ -27,9 +27,9 @@ export const brand = {
   account: '40702810400000123456',
   corrAccount: '30101810400000000225',
 
-  emailSales: 'sales@streamora.cloud',
-  emailSupport: 'support@streamora.cloud',
-  emailHr: 'hr@streamora.cloud',
+  emailSales: 'sales@stream-pop.net',
+  emailSupport: 'support@stream-pop.net',
+  emailHr: 'hr@stream-pop.net',
   phone: '+7 (495) 120-45-67',
 } as const
 

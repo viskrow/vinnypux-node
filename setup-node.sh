@@ -417,8 +417,20 @@ issue_node_sni_cert() {
   local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"   # эту папку монтирует potato
   local acme="/root/.acme.sh/acme.sh"
 
-  [[ -n "${CF_Token_SP:-}" ]] || { info "CF_Token_SP не задан — пропускаю cert для *.$domain"; return 0; }
-  [[ -x "$acme" ]] || { warn "acme.sh нет — пропускаю cert для *.$domain"; return 0; }
+  # ⚠ nginx.conf держит server-блок для *.stream-pop.net с ЖЁСТКИМИ путями к
+  # sp-cert.pem/sp-key.pem. Файла нет → nginx НЕ СТАРТУЕТ ВООБЩЕ (не «блок
+  # пропущен»), и нода остаётся без selfsteal-фолбэка. Поэтому placeholder
+  # кладём ВСЕГДА и заранее — реальный cert его просто перезапишет ниже.
+  if [[ ! -s "$cert_dir/sp-cert.pem" ]]; then
+    mkdir -p "$cert_dir"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout "$cert_dir/sp-key.pem" -out "$cert_dir/sp-cert.pem" \
+      -subj "/CN=$domain" -addext "subjectAltName=DNS:$domain,DNS:*.$domain" > /dev/null 2>&1
+    chmod 600 "$cert_dir/sp-key.pem"
+  fi
+
+  [[ -n "${CF_Token_SP:-}" ]] || { info "CF_Token_SP не задан — оставляю placeholder для *.$domain"; return 0; }
+  [[ -x "$acme" ]] || { warn "acme.sh нет — оставляю placeholder для *.$domain"; return 0; }
 
   info "Выпуск wildcard cert для *.$domain (node-SNI домен)..."
   if CF_Token="$CF_Token_SP" "$acme" --issue --dns dns_cf \
