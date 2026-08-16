@@ -11,6 +11,8 @@
 #   --with-bridges       открыть порты 7443-7447 для мостов RU→Foreign
 #   --ru-bridge          xHTTP-only RU-мост: открыть ТОЛЬКО SSH/mgmt/443/metrics
 #                        (без direct-VPN 2053/7443/7444/2096) — узкая attack surface
+#   --cf-token-sp "xxx"  CF-токен для *.stream-pop.net (node-SNI домен, ОТДЕЛЬНЫЙ аккаунт;
+#                          без него Trojan/HY2 на профилях -11 не поднимутся)
 #   --cf-token "xxx"     Cloudflare API token для выпуска wildcard cert
 #                          *.vinnypuxtomoon.today через acme.sh + DNS-01.
 #                          Опционально (для selfsteal/bridge нод).
@@ -82,7 +84,7 @@ SCRIPT_PATH="/usr/local/sbin/sysboot.sh"
   for _arg in "$@"; do
     if [[ $_skip_next -eq 1 ]]; then _masked_args+=" ***"; _skip_next=0; continue; fi
     case "$_arg" in
-      --secret-key|--cf-token) _masked_args+=" $_arg"; _skip_next=1 ;;
+      --secret-key|--cf-token|--cf-token-sp) _masked_args+=" $_arg"; _skip_next=1 ;;
       *) _masked_args+=" $_arg" ;;
     esac
   done
@@ -171,6 +173,10 @@ EOF
 Description=Node Setup — resume after reboot
 After=network-online.target docker.service
 Wants=network-online.target
+# Юнит сам себя обезвреживает: скрипт при успехе удаляет state.env, и следующая
+# загрузка пропускает юнит по этому условию. Так уборке не нужен daemon-reload
+# на живом процессе (см. remove_resume_service).
+ConditionPathExists=$STATE_FILE
 
 [Service]
 Type=oneshot
@@ -201,9 +207,14 @@ remove_resume_service() {
   # Прецедент: турецкая нода 2026-08-14 — resume стартовал 12:12:41, убит 12:14:12
   # ('timeout') прямо на установке Docker. Та же смерть раньше списывалась на
   # «старую версию юнита» (cdnvideo-4, MWS 07-25). Уборку откладываем на после выхода.
+  # ⚠ ОТЛОЖЕННАЯ УБОРКА ТОЖЕ НЕ ГОДИТСЯ (проверено на netrack 2026-08-15): любой
+  # daemon-reload, пока юнит ЖИВ, сбрасывает его TimeoutStartSec=infinity вместе с
+  # удалённой глобальной страховкой → процесс всё равно умирает на 90-й секунде,
+  # просто позже. Под юнитом НЕ трогаем ни systemd, ни файл юнита: достаточно убрать
+  # state.env — юнит обезврежен своим ConditionPathExists и на следующей загрузке
+  # просто пропускается. Файл юнита и страховку подчистит первый же обычный запуск.
   if grep -qs "$RESUME_SERVICE" /proc/self/cgroup; then
-    systemd-run --on-active=20 --unit=sysboot-cleanup --quiet /bin/sh -c \
-      "systemctl disable ${RESUME_SERVICE}.service; rm -f /etc/systemd/system/${RESUME_SERVICE}.service /etc/systemd/system.conf.d/99-resume-timeout.conf '$STATE_FILE' '$SCRIPT_PATH'; systemctl daemon-reload" 2>/dev/null || true
+    rm -f "$STATE_FILE"
     return 0
   fi
   systemctl disable "${RESUME_SERVICE}.service" > /dev/null 2>&1 || true
@@ -389,6 +400,42 @@ issue_wildcard_acme() {
 
   ok "Cert установлен в $cert_dir"
   ok "Renewal: acme.sh cron проверяет ежедневно, обновляет за 30 дней до expiry"
+
+  issue_node_sni_cert
+}
+
+# ─── Wildcard для НОВОГО node-SNI домена (stream-pop.net, task10) ────────────
+# Зачем ОТДЕЛЬНО: инбаунды Trojan/HY2 в профилях -11 объявляют ДВА cert-блока
+# (cert.pem = vinnypuxtomoon + sp-cert.pem = новый домен), чтобы мигрировать имена
+# без разрыва живых юзеров. Файла sp-cert.pem нет → hysteria-инбаунд НЕ поднимается
+# молча (порт :2096 просто не слушает; в error.log ни строчки).
+# Прецедент: th-nl 2026-08-16 — пушнули -11, HY2 лёг, нашли только по `ss -ulnp`.
+# Токен ОТДЕЛЬНЫЙ (домен в своём CF-аккаунте): env CF_Token_SP или --cf-token-sp.
+# Не задан → просто пропускаем: нода живёт на старом домене, Trojan/HY2 работают.
+issue_node_sni_cert() {
+  local domain="stream-pop.net"
+  local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"   # эту папку монтирует potato
+  local acme="/root/.acme.sh/acme.sh"
+
+  [[ -n "${CF_Token_SP:-}" ]] || { info "CF_Token_SP не задан — пропускаю cert для *.$domain"; return 0; }
+  [[ -x "$acme" ]] || { warn "acme.sh нет — пропускаю cert для *.$domain"; return 0; }
+
+  info "Выпуск wildcard cert для *.$domain (node-SNI домен)..."
+  if CF_Token="$CF_Token_SP" "$acme" --issue --dns dns_cf \
+       -d "$domain" -d "*.$domain" --keylength ec-256 \
+       > /tmp/acme-sp.log 2>&1 \
+     || grep -qE 'Domains not changed|Skip, Next renewal' /tmp/acme-sp.log; then
+    "$acme" --install-cert -d "$domain" --ecc \
+      --fullchain-file "$cert_dir/sp-cert.pem" \
+      --key-file       "$cert_dir/sp-key.pem" \
+      --reloadcmd      "docker restart potato >/dev/null 2>&1 || true" > /dev/null 2>&1
+    chmod 600 "$cert_dir/sp-key.pem" 2>/dev/null || true
+    ok "Cert *.$domain установлен (sp-cert.pem) — Trojan/HY2 на профилях -11 поднимутся"
+  else
+    warn "acme.sh не выпустил *.$domain — Trojan/HY2 на профиле -11 не стартуют:"
+    tail -10 /tmp/acme-sp.log
+  fi
+  rm -f /tmp/acme-sp.log
 }
 
 # ─── Гарантирует наличие vinnypuxtomoon cert (нужен http-уровню nginx.conf) ──
@@ -454,6 +501,7 @@ while [[ $# -gt 0 ]]; do
     --ru-bridge)      RU_BRIDGE="true";   shift ;;
     --f2b-ignoreip)   F2B_IGNOREIP="$2";  shift 2 ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
+    --cf-token-sp)    CF_Token_SP="$2";   shift 2 ;;   # токен CF для *.stream-pop.net (свой аккаунт)
     --no-wombat)      NO_WOMBAT="true";   shift ;;
     --extra-ports)    EXTRA_PORTS="$2";   shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
