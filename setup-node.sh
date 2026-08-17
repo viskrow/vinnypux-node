@@ -1236,6 +1236,27 @@ else
   warn "sshd -t fail → anti-flood drop-in откатан"
 fi
 
+# ─── SSH: выключить парольный вход ────────────────────────────────────────────
+# Ловушка с именем файла: для каждой директивы sshd берёт ПЕРВОЕ значение, а
+# Include sshd_config.d/*.conf идёт в начале конфига → cloud-init'овский
+# 50-cloud-init.conf (PasswordAuthentication yes) перебивает любой 99-*.
+# Отсюда 01-: только так наш drop-in выигрывает.
+if [[ -s /root/.ssh/authorized_keys ]]; then
+  cat > /etc/ssh/sshd_config.d/01-hardening.conf << 'SSHEOF'
+PasswordAuthentication no
+PermitRootLogin prohibit-password
+SSHEOF
+  if sshd -t 2>/dev/null; then
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    ok "SSH: парольный вход выключен (только ключи)"
+  else
+    rm -f /etc/ssh/sshd_config.d/01-hardening.conf
+    warn "sshd -t fail → hardening drop-in откатан"
+  fi
+else
+  warn "SSH: /root/.ssh/authorized_keys пуст → пароль НЕ выключаем (иначе лок-аут)"
+fi
+
 # ─── fail2ban (банит SSH-сканеры) ─────────────────────────────────────────────
 # ignoreip из --f2b-ignoreip (admin/dev IP), НЕ хардкодится в репо. aggressive-mode
 # ловит "Connection reset"/"Did not receive identification string".
