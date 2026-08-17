@@ -434,10 +434,10 @@ issue_node_sni_cert() {
 
   info "Выпуск wildcard cert для *.$domain (node-SNI домен)..."
   if CF_Token="$CF_Token_SP" "$acme" --issue --dns dns_cf \
-       -d "$domain" -d "*.$domain" --keylength ec-256 \
+       -d "$domain" -d "*.$domain" --keylength 2048 \
        > /tmp/acme-sp.log 2>&1 \
      || grep -qE 'Domains not changed|Skip, Next renewal' /tmp/acme-sp.log; then
-    "$acme" --install-cert -d "$domain" --ecc \
+    "$acme" --install-cert -d "$domain" \
       --fullchain-file "$cert_dir/sp-cert.pem" \
       --key-file       "$cert_dir/sp-key.pem" \
       --reloadcmd      "docker restart potato >/dev/null 2>&1 || true" > /dev/null 2>&1
