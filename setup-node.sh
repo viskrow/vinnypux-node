@@ -1458,6 +1458,9 @@ RUN set -e; \
     [ -x /usr/local/bin/webd ] || fail "нет бинаря webd"; \
     [ -e /usr/local/bin/xray ] && fail "бинарь xray не переименован"; \
     [ -e /usr/local/bin/rw-core ] && fail "симлинк rw-core не убран"; \
+    for h in /usr/local/bin/xerrors /usr/local/bin/xlogs; do \
+        [ -f "$h" ] && grep -q '/var/log/xray' "$h" && fail "$h всё ещё тейлит /var/log/xray"; \
+    done; true; \
     echo "obfuscation check: OK"
 POTATO_DOCKERFILE
 
