@@ -128,6 +128,9 @@ WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
 RU_BRIDGE=$(printf '%q' "$RU_BRIDGE")
 F2B_IGNOREIP=$(printf '%q' "$F2B_IGNOREIP")
 CF_Token=$(printf '%q' "$CF_Token")
+NODE_PORT=$(printf '%q' "$NODE_PORT")
+NO_WOMBAT=$(printf '%q' "$NO_WOMBAT")
+EXTRA_PORTS=$(printf '%q' "$EXTRA_PORTS")
 EOF
   chmod 600 "$STATE_FILE"
 }
