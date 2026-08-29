@@ -1410,8 +1410,11 @@ USER root
 #      (агент хардкодит имя s6-сервиса `xray` для control-сокета `${dir}/supervise/control`+s6-svc
 #      и тейлит /var/log/xray/current; без синхронизации: "s6 xray control socket not found, exiting");
 #   4) init-env.sh: дремлющая CUSTOM_CORE_URL-ветка тоже писала /usr/local/bin/xray;
-#   5) s6-сервисы xray→webd / xray-log→webd-log: папки + user/contents.d маркеры +
+#   5) s6-сервисы xray→webd / xray-log→webd-log: папки + маркеры бандла `user` +
 #      producer/consumer/pipeline-name связки + лог /var/log/xray→/var/log/webd + mkdir.
+#      ⚠ Бандл ПЕРЕЕХАЛ в node 3.4.0: было `s6-rc.d/user/contents.d/`, стало
+#      `user-bundles.d/user/contents.d/` (+ новый `user/type`). Патчим ОБЕ раскладки —
+#      иначе на 3.4.x `mv` падал бы на несуществующем пути и ронял сборку.
 # ⚠ s6-rc компилируется при СТАРТЕ контейнера из s6-rc.d/ → producer/consumer/pipeline-name
 #   ДОЛЖНЫ быть согласованы, иначе s6-rc-compile падает и контейнер не встаёт (тест на 1 ноде!).
 RUN set -e; \
@@ -1434,8 +1437,12 @@ RUN set -e; \
     cd /etc/s6-overlay/s6-rc.d; \
     mv xray webd; \
     mv xray-log webd-log; \
-    { [ -e user/contents.d/xray ] && mv user/contents.d/xray user/contents.d/webd; } || true; \
-    mv user/contents.d/xray-log user/contents.d/webd-log; \
+    for b in /etc/s6-overlay/s6-rc.d/user/contents.d \
+             /etc/s6-overlay/user-bundles.d/user/contents.d; do \
+        [ -d "$b" ] || continue; \
+        { [ -e "$b/xray" ] && mv "$b/xray" "$b/webd"; } || true; \
+        { [ -e "$b/xray-log" ] && mv "$b/xray-log" "$b/webd-log"; } || true; \
+    done; true; \
     echo webd-log > webd/producer-for; \
     echo webd > webd-log/consumer-for; \
     echo webd-pipeline > webd-log/pipeline-name; \
@@ -1458,6 +1465,14 @@ RUN set -e; \
         grep -q -- "$kw" /opt/app/dist/cli.js && fail "cli.js содержит '$kw'"; done; } || true; \
     [ -d /etc/s6-overlay/s6-rc.d/webd ] || fail "s6: нет сервиса webd"; \
     [ -d /etc/s6-overlay/s6-rc.d/xray ] && fail "s6: сервис xray не переименован"; \
+    for b in /etc/s6-overlay/s6-rc.d/user/contents.d \
+             /etc/s6-overlay/user-bundles.d/user/contents.d; do \
+        [ -e "$b/xray" ] && fail "s6-бандл $b всё ещё указывает на xray"; \
+        [ -e "$b/xray-log" ] && fail "s6-бандл $b всё ещё указывает на xray-log"; \
+    done; \
+    { [ -e /etc/s6-overlay/s6-rc.d/user/contents.d/webd-log ] \
+      || [ -e /etc/s6-overlay/user-bundles.d/user/contents.d/webd-log ]; } \
+      || fail "s6: маркер webd-log не найден ни в одном бандле"; \
     [ -x /usr/local/bin/webd ] || fail "нет бинаря webd"; \
     [ -e /usr/local/bin/xray ] && fail "бинарь xray не переименован"; \
     [ -e /usr/local/bin/rw-core ] && fail "симлинк rw-core не убран"; \
