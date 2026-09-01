@@ -13,6 +13,7 @@
 #                        (без direct-VPN 2053/7443/7444/2096) — узкая attack surface
 #   --cf-token-sp "xxx"  CF-токен для *.stream-pop.net (node-SNI домен, ОТДЕЛЬНЫЙ аккаунт;
 #                          без него Trojan/HY2 на профилях -11 не поднимутся)
+#   --cf-token-cp "xxx"  CF-токен для *.cdnpop.net (вторая семья node-SNI, свой аккаунт)
 #   --cf-token "xxx"     Cloudflare API token для выпуска wildcard cert
 #                          *.vinnypuxtomoon.today через acme.sh + DNS-01.
 #                          Опционально (для selfsteal/bridge нод).
@@ -84,7 +85,7 @@ SCRIPT_PATH="/usr/local/sbin/sysboot.sh"
   for _arg in "$@"; do
     if [[ $_skip_next -eq 1 ]]; then _masked_args+=" ***"; _skip_next=0; continue; fi
     case "$_arg" in
-      --secret-key|--cf-token|--cf-token-sp) _masked_args+=" $_arg"; _skip_next=1 ;;
+      --secret-key|--cf-token|--cf-token-sp|--cf-token-cp) _masked_args+=" $_arg"; _skip_next=1 ;;
       *) _masked_args+=" $_arg" ;;
     esac
   done
@@ -128,6 +129,8 @@ WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
 RU_BRIDGE=$(printf '%q' "$RU_BRIDGE")
 F2B_IGNOREIP=$(printf '%q' "$F2B_IGNOREIP")
 CF_Token=$(printf '%q' "$CF_Token")
+CF_Token_SP=$(printf '%q' "$CF_Token_SP")
+CF_Token_CP=$(printf '%q' "$CF_Token_CP")
 NODE_PORT=$(printf '%q' "$NODE_PORT")
 NO_WOMBAT=$(printf '%q' "$NO_WOMBAT")
 EXTRA_PORTS=$(printf '%q' "$EXTRA_PORTS")
@@ -404,53 +407,61 @@ issue_wildcard_acme() {
   ok "Cert установлен в $cert_dir"
   ok "Renewal: acme.sh cron проверяет ежедневно, обновляет за 30 дней до expiry"
 
-  issue_node_sni_cert
+  issue_node_sni_certs
 }
 
-# ─── Wildcard для НОВОГО node-SNI домена (stream-pop.net, task10) ────────────
-# Зачем ОТДЕЛЬНО: инбаунды Trojan/HY2 в профилях -11 объявляют ДВА cert-блока
-# (cert.pem = vinnypuxtomoon + sp-cert.pem = новый домен), чтобы мигрировать имена
-# без разрыва живых юзеров. Файла sp-cert.pem нет → hysteria-инбаунд НЕ поднимается
-# молча (порт :2096 просто не слушает; в error.log ни строчки).
+# ─── Wildcard'ы для node-SNI доменов (stream-pop.net + cdnpop.net, task10) ───
+# Зачем ОТДЕЛЬНО: инбаунды Trojan/HY2 в профилях -11 объявляют ТРИ cert-блока
+# (cert.pem = vinnypuxtomoon + sp-cert.pem + cp-cert.pem = две семьи node-SNI),
+# чтобы мигрировать имена без разрыва живых юзеров. Файла нет → hysteria-инбаунд
+# НЕ поднимается молча (порт :2096 просто не слушает; в error.log ни строчки).
 # Прецедент: th-nl 2026-08-16 — пушнули -11, HY2 лёг, нашли только по `ss -ulnp`.
-# Токен ОТДЕЛЬНЫЙ (домен в своём CF-аккаунте): env CF_Token_SP или --cf-token-sp.
-# Не задан → просто пропускаем: нода живёт на старом домене, Trojan/HY2 работают.
+# Токены ОТДЕЛЬНЫЕ (домены в своих CF-аккаунтах): CF_Token_SP/--cf-token-sp,
+# CF_Token_CP/--cf-token-cp. Не заданы → placeholder: нода живёт на старом домене.
+issue_node_sni_certs() {
+  issue_node_sni_cert "stream-pop.net" sp "${CF_Token_SP:-}"
+  issue_node_sni_cert "cdnpop.net"     cp "${CF_Token_CP:-}"
+}
+
+# $1 = домен, $2 = префикс файлов (sp|cp), $3 = CF-токен этого домена
 issue_node_sni_cert() {
-  local domain="stream-pop.net"
+  local domain="$1" pfx="$2" token="$3"
   local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"   # эту папку монтирует potato
   local acme="/root/.acme.sh/acme.sh"
 
-  # ⚠ nginx.conf держит server-блок для *.stream-pop.net с ЖЁСТКИМИ путями к
-  # sp-cert.pem/sp-key.pem. Файла нет → nginx НЕ СТАРТУЕТ ВООБЩЕ (не «блок
+  # ⚠ nginx.conf держит server-блоки для обеих семей с ЖЁСТКИМИ путями к
+  # {sp,cp}-cert.pem/{sp,cp}-key.pem. Файла нет → nginx НЕ СТАРТУЕТ ВООБЩЕ (не «блок
   # пропущен»), и нода остаётся без selfsteal-фолбэка. Поэтому placeholder
   # кладём ВСЕГДА и заранее — реальный cert его просто перезапишет ниже.
-  if [[ ! -s "$cert_dir/sp-cert.pem" ]]; then
+  # Прецедент: sh-us 2026-09-01 — cp-cert.pem не раскладывался вовсе, wombat ушёл
+  # в рестарт-петлю на `[emerg] cannot load certificate .../cp-cert.pem`.
+  if [[ ! -s "$cert_dir/$pfx-cert.pem" ]]; then
     mkdir -p "$cert_dir"
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-      -keyout "$cert_dir/sp-key.pem" -out "$cert_dir/sp-cert.pem" \
+      -keyout "$cert_dir/$pfx-key.pem" -out "$cert_dir/$pfx-cert.pem" \
       -subj "/CN=$domain" -addext "subjectAltName=DNS:$domain,DNS:*.$domain" > /dev/null 2>&1
-    chmod 600 "$cert_dir/sp-key.pem"
+    chmod 600 "$cert_dir/$pfx-key.pem"
   fi
 
-  [[ -n "${CF_Token_SP:-}" ]] || { info "CF_Token_SP не задан — оставляю placeholder для *.$domain"; return 0; }
+  [[ -n "$token" ]] || { info "Токен для *.$domain не задан — оставляю placeholder"; return 0; }
   [[ -x "$acme" ]] || { warn "acme.sh нет — оставляю placeholder для *.$domain"; return 0; }
 
   info "Выпуск wildcard cert для *.$domain (node-SNI домен)..."
-  if CF_Token="$CF_Token_SP" "$acme" --issue --dns dns_cf \
+  if CF_Token="$token" "$acme" --issue --dns dns_cf \
        -d "$domain" -d "*.$domain" --keylength 2048 \
-       > /tmp/acme-sp.log 2>&1 \
-     || grep -qE 'Domains not changed|Skip, Next renewal' /tmp/acme-sp.log; then
+       > "/tmp/acme-$pfx.log" 2>&1 \
+     || grep -qE 'Domains not changed|Skip, Next renewal' "/tmp/acme-$pfx.log"; then
     "$acme" --install-cert -d "$domain" \
-      --fullchain-file "$cert_dir/sp-cert.pem" \
-      --key-file       "$cert_dir/sp-key.pem" \
+      --fullchain-file "$cert_dir/$pfx-cert.pem" \
+      --key-file       "$cert_dir/$pfx-key.pem" \
       --reloadcmd      "docker restart potato >/dev/null 2>&1 || true" > /dev/null 2>&1
-    chmod 600 "$cert_dir/sp-key.pem" 2>/dev/null || true
-    ok "Cert *.$domain установлен (sp-cert.pem) — Trojan/HY2 на профилях -11 поднимутся"
+    chmod 600 "$cert_dir/$pfx-key.pem" 2>/dev/null || true
+    ok "Cert *.$domain установлен ($pfx-cert.pem) — Trojan/HY2 на профилях -11 поднимутся"
   else
     warn "acme.sh не выпустил *.$domain — Trojan/HY2 на профиле -11 не стартуют:"
-    tail -10 /tmp/acme-sp.log
+    tail -10 "/tmp/acme-$pfx.log"
   fi
-  rm -f /tmp/acme-sp.log
+  rm -f "/tmp/acme-$pfx.log"
 }
 
 # ─── Гарантирует наличие vinnypuxtomoon cert (нужен http-уровню nginx.conf) ──
@@ -495,6 +506,8 @@ WITH_BRIDGES="false"
 RU_BRIDGE="false"   # xHTTP-only RU-мост: открываем лишь SSH/mgmt/443/metrics (см --ru-bridge)
 F2B_IGNOREIP="${F2B_IGNOREIP:-}"  # доп. admin/dev IP|CIDR для fail2ban ignoreip (через --f2b-ignoreip; НЕ хардкодить в репо)
 CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
+CF_Token_SP="${CF_Token_SP:-}"  # токен для *.stream-pop.net (своя CF-зона)
+CF_Token_CP="${CF_Token_CP:-}"  # токен для *.cdnpop.net (своя CF-зона)
 NO_WOMBAT="false"   # --no-wombat: не поднимать wombat (coexist с чужим стеком на :80/:443, напр. Guardora)
 EXTRA_PORTS=""      # --extra-ports "53,80,8443": доп. ufw-allow (порты параллельного стека + наши нестандартные)
 PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
@@ -517,6 +530,7 @@ while [[ $# -gt 0 ]]; do
     --f2b-ignoreip)   F2B_IGNOREIP="$2";  shift 2 ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
     --cf-token-sp)    CF_Token_SP="$2";   shift 2 ;;   # токен CF для *.stream-pop.net (свой аккаунт)
+    --cf-token-cp)    CF_Token_CP="$2";   shift 2 ;;   # токен CF для *.cdnpop.net (свой аккаунт)
     --no-wombat)      NO_WOMBAT="true";   shift ;;
     --extra-ports)    EXTRA_PORTS="$2";   shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
