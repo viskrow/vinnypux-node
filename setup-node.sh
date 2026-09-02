@@ -14,6 +14,9 @@
 #   --cf-token-sp "xxx"  CF-токен для *.stream-pop.net (node-SNI домен, ОТДЕЛЬНЫЙ аккаунт;
 #                          без него Trojan/HY2 на профилях -11 не поднимутся)
 #   --cf-token-cp "xxx"  CF-токен для *.cdnpop.net (вторая семья node-SNI, свой аккаунт)
+#   --agent-uuid "..."   UUID ноды в админ-панели + --agent-token "..." — ставят
+#   --agent-token "..."    node-agent `otter` (метрики/анти-абуз). Оба опциональны:
+#                          не переданы или образ не скачался → агент просто пропускается.
 #   --cf-token "xxx"     Cloudflare API token для выпуска wildcard cert
 #                          *.vinnypuxtomoon.today через acme.sh + DNS-01.
 #                          Опционально (для selfsteal/bridge нод).
@@ -85,7 +88,7 @@ SCRIPT_PATH="/usr/local/sbin/sysboot.sh"
   for _arg in "$@"; do
     if [[ $_skip_next -eq 1 ]]; then _masked_args+=" ***"; _skip_next=0; continue; fi
     case "$_arg" in
-      --secret-key|--cf-token|--cf-token-sp|--cf-token-cp) _masked_args+=" $_arg"; _skip_next=1 ;;
+      --secret-key|--cf-token|--cf-token-sp|--cf-token-cp|--agent-token) _masked_args+=" $_arg"; _skip_next=1 ;;
       *) _masked_args+=" $_arg" ;;
     esac
   done
@@ -131,6 +134,8 @@ F2B_IGNOREIP=$(printf '%q' "$F2B_IGNOREIP")
 CF_Token=$(printf '%q' "$CF_Token")
 CF_Token_SP=$(printf '%q' "$CF_Token_SP")
 CF_Token_CP=$(printf '%q' "$CF_Token_CP")
+AGENT_UUID=$(printf '%q' "$AGENT_UUID")
+AGENT_TOKEN=$(printf '%q' "$AGENT_TOKEN")
 NODE_PORT=$(printf '%q' "$NODE_PORT")
 NO_WOMBAT=$(printf '%q' "$NO_WOMBAT")
 EXTRA_PORTS=$(printf '%q' "$EXTRA_PORTS")
@@ -410,6 +415,95 @@ issue_wildcard_acme() {
   issue_node_sni_certs
 }
 
+# ─── Обфусцированный node-agent `otter` (метрики + анти-абуз) ────────────────
+# Ставится ТОЛЬКО если переданы --agent-uuid и --agent-token: UUID появляется
+# лишь после того, как ноду завели в админ-панели, а токен выпускается там же
+# (`POST /api/v3/nodes/{uuid}/agent-token/generate`). Скрипт токены НЕ выпускает
+# сам намеренно: для этого пришлось бы держать на КАЖДОЙ ноде ключ со скоупом
+# `nodes:token`, который умеет ротировать токен любой ноды флота — изъятая RU-
+# коробка или партнёрская VM тогда ослепляет мониторинг целиком.
+# ⚠ ВСЁ ВНУТРИ НЕФАТАЛЬНО: не встал агент — нода всё равно рабочая (решение user
+# 2026-09-02). Частый кейс — ghcr не тянется из Турции/РФ; тогда доставить руками:
+#   docker save ghcr.io/case211/remnawave-admin-node-agent:latest | ssh <node> 'docker load'
+install_node_agent() {
+  local dir="/opt/otter"
+  local up="ghcr.io/case211/remnawave-admin-node-agent:latest"
+
+  [[ -n "$AGENT_UUID" && -n "$AGENT_TOKEN" ]] || {
+    info "agent-uuid/agent-token не заданы — otter пропущен (нода будет без метрик в inspect)"
+    return 0
+  }
+
+  info "Ставим node-agent (otter)..."
+  # Retag прячет апстрим-имя из `docker images` — это часть обфускации, не косметика.
+  if docker pull -q "$up" > /dev/null 2>&1; then
+    docker tag "$up" local/otter:v1 && docker rmi "$up" > /dev/null 2>&1 || true
+  elif ! docker image inspect local/otter:v1 > /dev/null 2>&1; then
+    warn "образ агента не скачался (ghcr недоступен?) — otter пропущен"
+    warn "  доставить: docker save $up | ssh <node> 'docker load' && docker tag … local/otter:v1"
+    return 0
+  fi
+
+  mkdir -p "$dir/logs"
+  cat > "$dir/docker-compose.yml" << 'YAML'
+services:
+  otter:
+    image: local/otter:v1
+    container_name: otter
+    restart: unless-stopped
+    env_file:
+      - .env
+    # host-сеть нужна для сетевых метрик; БЕЗ privileged/pid:host —
+    # коллектор не может выполнять код на ноде, канал только на чтение.
+    network_mode: "host"
+    volumes:
+      - /var/log/potato:/var/log/potato:ro
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+        reservations:
+          memory: 32M
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python -m src.main' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+YAML
+
+  # AGENT_XRAY_LOG_PATH обязателен: дефолт /var/log/remnanode/... у нас не
+  # существует (обфускация), без него анти-абуз молча не парсит ничего.
+  cat > "$dir/.env" << EOF
+AGENT_NODE_UUID=$AGENT_UUID
+AGENT_AUTH_TOKEN=$AGENT_TOKEN
+AGENT_COLLECTOR_URL=https://inspect.vinnydev.live
+AGENT_WS_URL=wss://inspect.vinnydev.live
+AGENT_INTERVAL_SECONDS=30
+AGENT_LOG_PARSING_MODE=realtime
+AGENT_XRAY_LOG_PATH=/var/log/potato/access.log
+AGENT_LOG_LEVEL=INFO
+AGENT_MAX_UPTIME_HOURS=6
+AGENT_COMMAND_ENABLED=false
+AGENT_HOST_MODE=false
+EOF
+  chmod 600 "$dir/.env"
+
+  if (cd "$dir" && docker compose up -d > /dev/null 2>&1) && wait_container_running otter 15; then
+    ok "otter запущен — метрики уйдут в inspect в течение ~40 c"
+  else
+    warn "otter не поднялся — проверь: cd $dir && docker compose logs"
+  fi
+}
+
 # ─── Wildcard'ы для node-SNI доменов (stream-pop.net + cdnpop.net, task10) ───
 # Зачем ОТДЕЛЬНО: инбаунды Trojan/HY2 в профилях -11 объявляют ТРИ cert-блока
 # (cert.pem = vinnypuxtomoon + sp-cert.pem + cp-cert.pem = две семьи node-SNI),
@@ -508,6 +602,8 @@ F2B_IGNOREIP="${F2B_IGNOREIP:-}"  # доп. admin/dev IP|CIDR для fail2ban ig
 CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
 CF_Token_SP="${CF_Token_SP:-}"  # токен для *.stream-pop.net (своя CF-зона)
 CF_Token_CP="${CF_Token_CP:-}"  # токен для *.cdnpop.net (своя CF-зона)
+AGENT_UUID="${AGENT_UUID:-}"    # UUID ноды в админ-панели (для otter)
+AGENT_TOKEN="${AGENT_TOKEN:-}"  # agent-токен из той же панели
 NO_WOMBAT="false"   # --no-wombat: не поднимать wombat (coexist с чужим стеком на :80/:443, напр. Guardora)
 EXTRA_PORTS=""      # --extra-ports "53,80,8443": доп. ufw-allow (порты параллельного стека + наши нестандартные)
 PULL_PIDS=()  # фоновые docker pull (используется в фазе 4 и ожидается в фазе 5)
@@ -531,6 +627,8 @@ while [[ $# -gt 0 ]]; do
     --cf-token)       CF_Token="$2";      shift 2 ;;
     --cf-token-sp)    CF_Token_SP="$2";   shift 2 ;;   # токен CF для *.stream-pop.net (свой аккаунт)
     --cf-token-cp)    CF_Token_CP="$2";   shift 2 ;;   # токен CF для *.cdnpop.net (свой аккаунт)
+    --agent-uuid)     AGENT_UUID="$2";    shift 2 ;;   # UUID ноды в админ-панели (otter)
+    --agent-token)    AGENT_TOKEN="$2";   shift 2 ;;   # agent-токен ноды (otter)
     --no-wombat)      NO_WOMBAT="true";   shift ;;
     --extra-ports)    EXTRA_PORTS="$2";   shift 2 ;;
     *) die "Неизвестный аргумент: $1" ;;
@@ -1710,6 +1808,8 @@ else
   warn "wombat не запустился — проверь: cd $INSTALL_DIR && docker compose logs"
 fi
 fi
+
+install_node_agent
 
 # ─── Готово ───────────────────────────────────────────────────────────────────
 echo ""
