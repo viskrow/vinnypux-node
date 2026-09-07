@@ -1524,6 +1524,9 @@ USER root
 #      s6-control-путь /run/service/xray→/run/service/webd и лог-тейл /var/log/xray→/var/log/webd
 #      (агент хардкодит имя s6-сервиса `xray` для control-сокета `${dir}/supervise/control`+s6-svc
 #      и тейлит /var/log/xray/current; без синхронизации: "s6 xray control socket not found, exiting");
+#      + nft tableName "remnanode"→"nodefw" (агент создаёт `table ip remnanode`/`ip6 remnanode6`
+#      на хосте — network_mode:host + CAP_NET_ADMIN; имя не конфигурится env, `6` для v6 лепится
+#      кодом ⇒ один sed чинит обе. Агент пересоздаёт таблицу при старте, ссылок на имя снаружи нет);
 #   4) init-env.sh: дремлющая CUSTOM_CORE_URL-ветка тоже писала /usr/local/bin/xray;
 #   5) s6-сервисы xray→webd / xray-log→webd-log: папки + маркеры бандла `user` +
 #      producer/consumer/pipeline-name связки + лог /var/log/xray→/var/log/webd + mkdir.
@@ -1540,6 +1543,7 @@ RUN set -e; \
         /etc/s6-overlay/scripts/init-env.sh; \
     sed -i -e 's|/usr/local/bin/xray|/usr/local/bin/webd|g' \
            -e 's|process.title="rw-node"|process.title="webd-agent"|' \
+           -e 's|tableName:"remnanode"|tableName:"nodefw"|' \
            -e 's|/run/service/xray|/run/service/webd|g' \
            -e 's|/var/log/xray|/var/log/webd|g' \
            -e 's|rw-core|webd-core|g' \
@@ -1576,6 +1580,8 @@ RUN set -e; \
         grep -q -- "$kw" /opt/app/dist/main.js && fail "main.js всё ещё содержит '$kw'"; \
     done; \
     grep -q 'webd-agent' /opt/app/dist/main.js || fail "main.js: process.title не переименован"; \
+    grep -q 'remnanode' /opt/app/dist/main.js && fail "main.js: nft tableName remnanode не переименован"; \
+    grep -q 'tableName:"nodefw"' /opt/app/dist/main.js || fail "main.js: nft tableName nodefw не найден"; \
     [ -f /opt/app/dist/cli.js ] && { for kw in rw-node rw-core remnawave; do \
         grep -q -- "$kw" /opt/app/dist/cli.js && fail "cli.js содержит '$kw'"; done; } || true; \
     [ -d /etc/s6-overlay/s6-rc.d/webd ] || fail "s6: нет сервиса webd"; \
