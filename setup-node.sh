@@ -793,7 +793,10 @@ net.ipv4.tcp_keepalive_probes = 5
 # ── Очереди и лимиты ─────────────────────────
 net.ipv4.tcp_syncookies = 1
 net.core.netdev_max_backlog = 250000
-net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_syn_backlog = 65535   # 8192 упирался: 2026-09-07 вечерний пик заполнил
+                                       # очередь на fdc-de/tkh-ee/th-nl (SYN_RECV 7.4-9.1k),
+                                       # SYN'ы пошли в дроп/syncookie → клиенты переоткрывали
+                                       # → retry-шторм. Цель 65535 стояла в reference_standard_tune
 net.core.somaxconn = 65535
 net.ipv4.ip_local_port_range = 1024 65535
 # ── Резерв сервисных портов от эфемерного диапазона ───────────────────────────
