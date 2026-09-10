@@ -898,6 +898,43 @@ RINGSVC
 systemctl daemon-reload
 systemctl enable nic-ring.service > /dev/null 2>&1
 
+# RPS — размазать softirq NET_RX по всем CPU (кольцо буферит burst, RPS разгребает).
+# Зачем: очередей у NIC меньше, чем ядер (fdc-de2: 16 очередей bnxt_en на 64 CPU, из них
+# 6 ядер несли по две) ⇒ в пик эти ядра не успевали дренить кольцо и оно роняло пакеты
+# при простое остальных. Включение RPS убрало дропы (204k/сутки → ~0 при 537k pps).
+cat > /usr/local/sbin/enable-rps.sh << 'RPSSH'
+#!/bin/sh
+IF=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$IF" ] || exit 0
+# маска = 32-битные группы через запятую: в shell 1<<64 схлопывается в 1, и на 64-ядерной
+# ноде одним числом получилась бы маска 0 (RPS молча выключен)
+N=$(nproc); M=""
+while [ "$N" -gt 0 ]; do
+  if [ "$N" -ge 32 ]; then G=ffffffff; else G=$(printf '%x' $(( (1 << N) - 1 ))); fi
+  M="$G${M:+,$M}"; N=$((N - 32))
+done
+for q in /sys/class/net/"$IF"/queues/rx-*/rps_cpus; do
+  [ -f "$q" ] && echo "$M" > "$q" 2>/dev/null
+done
+exit 0
+RPSSH
+chmod +x /usr/local/sbin/enable-rps.sh
+/usr/local/sbin/enable-rps.sh
+cat > /etc/systemd/system/rps-vpn.service << 'RPSSVC'
+[Unit]
+Description=Spread NIC RX softirq across all CPUs
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/enable-rps.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+RPSSVC
+systemctl daemon-reload
+systemctl enable rps-vpn.service > /dev/null 2>&1
+
 # THP off (latency: убирает фоновую memory-compaction под нагрузкой; THP — это /sys, не sysctl)
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
 echo never > /sys/kernel/mm/transparent_hugepage/defrag  2>/dev/null || true
@@ -915,7 +952,7 @@ THPEOF
 systemctl daemon-reload
 systemctl enable --now disable-thp.service > /dev/null 2>&1
 
-ok "BBR3 + sysctl + ulimits + fq + THP-off + NIC-ring настроены"
+ok "BBR3 + sysctl + ulimits + fq + THP-off + NIC-ring + RPS настроены"
 
 # =============================================================================
 # 3. Firewall (UFW)
