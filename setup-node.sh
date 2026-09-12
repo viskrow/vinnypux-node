@@ -340,6 +340,21 @@ wait_container_running() {
 # ─── Wildcard cert через acme.sh + Cloudflare DNS-01 ────────────────────────
 # Вызывается из ensure_vinnypuxtomoon_cert когда $CF_Token задан.
 # Идемпотентно: если cert свежий — acme.sh ничего не делает.
+# Zone ID зоны по её же токену (нужен, чтобы acme.sh хранил пару токен+зона ПОДОМЕННО).
+# Зачем: наши три cert-зоны (vinnypuxtomoon.today / stream-pop.net / cdnpop.net) лежат в РАЗНЫХ
+# аккаунтах Cloudflare, а токен CF действует только в своём. acme.sh же хранит ОДИН CF_Token в
+# ~/.acme.sh/account.conf ⇒ последний выпуск затирал предыдущий и продление двух зон из трёх
+# молча умирало ("invalid domain" при добавлении TXT, cron пишет в /dev/null).
+# Если при выпуске заданы CF_Token И CF_Zone_ID, плагин dns_cf кладёт пару в domain.conf своей
+# зоны (_savedomainconf), и зоны перестают перетирать друг друга. Найдено на флоте 2026-09-11.
+cf_zone_id() {
+  local domain="$1" token="$2" out
+  [[ -n "$token" ]] || return 0
+  out=$(curl -fsS -m 15 -H "Authorization: Bearer $token" \
+        "https://api.cloudflare.com/client/v4/zones?name=$domain" 2>/dev/null) || return 0
+  printf '%s' "$out" | grep -oE '"id":"[0-9a-f]{32}"' | head -1 | cut -d'"' -f4
+}
+
 issue_wildcard_acme() {
   local domain="vinnypuxtomoon.today"
   local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"
@@ -374,7 +389,9 @@ issue_wildcard_acme() {
   "$acme" --set-default-ca --server letsencrypt > /dev/null 2>&1 || true
 
   # Issue (использует Cloudflare DNS-01 plugin dns_cf через CF_Token env)
-  if CF_Token="$CF_Token" "$acme" --issue --dns dns_cf \
+  local zid; zid=$(cf_zone_id "$domain" "$CF_Token")
+  [[ -n "$zid" ]] || warn "zone id для $domain не определился — продление может конфликтовать с другими зонами"
+  if CF_Token="$CF_Token" CF_Zone_ID="$zid" "$acme" --issue --dns dns_cf \
        -d "$domain" -d "*.$domain" --keylength 2048 \
        > /tmp/acme-issue.log 2>&1; then
     ok "Cert выпущен через Let's Encrypt"
@@ -512,6 +529,9 @@ EOF
 # Прецедент: th-nl 2026-08-16 — пушнули -11, HY2 лёг, нашли только по `ss -ulnp`.
 # Токены ОТДЕЛЬНЫЕ (домены в своих CF-аккаунтах): CF_Token_SP/--cf-token-sp,
 # CF_Token_CP/--cf-token-cp. Не заданы → placeholder: нода живёт на старом домене.
+# ⚠ У LE лимит 5 ДУБЛИКАТОВ одного набора доменов в неделю. Каждая нода выпускает свой
+# экземпляр *.stream-pop.net / *.cdnpop.net ⇒ больше 5 новых нод за неделю упрутся в лимит.
+# На флоте cdnpop раздаётся централизованно с pearly (/usr/local/sbin/deploy-cp-cert.sh).
 issue_node_sni_certs() {
   issue_node_sni_cert "stream-pop.net" sp "${CF_Token_SP:-}"
   issue_node_sni_cert "cdnpop.net"     cp "${CF_Token_CP:-}"
@@ -541,7 +561,9 @@ issue_node_sni_cert() {
   [[ -x "$acme" ]] || { warn "acme.sh нет — оставляю placeholder для *.$domain"; return 0; }
 
   info "Выпуск wildcard cert для *.$domain (node-SNI домен)..."
-  if CF_Token="$token" "$acme" --issue --dns dns_cf \
+  local zid; zid=$(cf_zone_id "$domain" "$token")
+  [[ -n "$zid" ]] || warn "zone id для $domain не определился — продление может конфликтовать с другими зонами"
+  if CF_Token="$token" CF_Zone_ID="$zid" "$acme" --issue --dns dns_cf \
        -d "$domain" -d "*.$domain" --keylength 2048 \
        > "/tmp/acme-$pfx.log" 2>&1 \
      || grep -qE 'Domains not changed|Skip, Next renewal' "/tmp/acme-$pfx.log"; then
