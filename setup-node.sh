@@ -840,6 +840,10 @@ net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 # ── SYN-флуд + TIME-WAIT хардеринг ───────────────────────────────────────────
 net.ipv4.tcp_synack_retries = 2
+# Исходящие SYN без ответа: дефолт 6 повторов = сокет висит 127 с. При массовых connect()
+# к одному адресу (YouTube direct → один фронт Google) SYN-SENT выедали все порты, ядро
+# уходило в перебор портов на 96% sys, нода умирала (tkh-ee 2026-09-17). 2 повтора ≈ 7 с.
+net.ipv4.tcp_syn_retries = 2
 net.ipv4.tcp_rfc1337 = 1
 net.ipv4.tcp_no_metrics_save = 1
 fs.file-max = 1000000
