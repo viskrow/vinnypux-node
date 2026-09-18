@@ -11,9 +11,6 @@
 #   --with-bridges       открыть порты 7443-7447 для мостов RU→Foreign
 #   --ru-bridge          xHTTP-only RU-мост: открыть ТОЛЬКО SSH/mgmt/443/metrics
 #                        (без direct-VPN 2053/7443/7444/2096) — узкая attack surface
-#   --cf-token-sp "xxx"  CF-токен для *.stream-pop.net (node-SNI домен, ОТДЕЛЬНЫЙ аккаунт;
-#                          без него Trojan/HY2 на профилях -11 не поднимутся)
-#   --cf-token-cp "xxx"  CF-токен для *.cdnpop.net (вторая семья node-SNI, свой аккаунт)
 #   --agent-uuid "..."   UUID ноды в админ-панели + --agent-token "..." — ставят
 #   --agent-token "..."    node-agent `otter` (метрики/анти-абуз). Оба опциональны:
 #                          не переданы или образ не скачался → агент просто пропускается.
@@ -88,7 +85,7 @@ SCRIPT_PATH="/usr/local/sbin/sysboot.sh"
   for _arg in "$@"; do
     if [[ $_skip_next -eq 1 ]]; then _masked_args+=" ***"; _skip_next=0; continue; fi
     case "$_arg" in
-      --secret-key|--cf-token|--cf-token-sp|--cf-token-cp|--agent-token) _masked_args+=" $_arg"; _skip_next=1 ;;
+      --secret-key|--cf-token|--agent-token) _masked_args+=" $_arg"; _skip_next=1 ;;
       *) _masked_args+=" $_arg" ;;
     esac
   done
@@ -132,8 +129,6 @@ WITH_BRIDGES=$(printf '%q' "$WITH_BRIDGES")
 RU_BRIDGE=$(printf '%q' "$RU_BRIDGE")
 F2B_IGNOREIP=$(printf '%q' "$F2B_IGNOREIP")
 CF_Token=$(printf '%q' "$CF_Token")
-CF_Token_SP=$(printf '%q' "$CF_Token_SP")
-CF_Token_CP=$(printf '%q' "$CF_Token_CP")
 AGENT_UUID=$(printf '%q' "$AGENT_UUID")
 AGENT_TOKEN=$(printf '%q' "$AGENT_TOKEN")
 NODE_PORT=$(printf '%q' "$NODE_PORT")
@@ -527,26 +522,25 @@ EOF
 # чтобы мигрировать имена без разрыва живых юзеров. Файла нет → hysteria-инбаунд
 # НЕ поднимается молча (порт :2096 просто не слушает; в error.log ни строчки).
 # Прецедент: th-nl 2026-08-16 — пушнули -11, HY2 лёг, нашли только по `ss -ulnp`.
-# Токены ОТДЕЛЬНЫЕ (домены в своих CF-аккаунтах): CF_Token_SP/--cf-token-sp,
-# CF_Token_CP/--cf-token-cp. Не заданы → placeholder: нода живёт на старом домене.
-# ⚠ У LE лимит 5 ДУБЛИКАТОВ одного набора доменов в неделю. Каждая нода выпускает свой
-# экземпляр *.stream-pop.net / *.cdnpop.net ⇒ больше 5 новых нод за неделю упрутся в лимит.
-# На флоте cdnpop раздаётся централизованно с pearly (/usr/local/sbin/deploy-cp-cert.sh).
+# ⚠ С 2026-09-18 обе семьи выпускаются ТОЛЬКО централизованно на pearly и раздаются оттуда:
+# у LE лимит 5 дубликатов одного набора имён в неделю, а нод 17 (плюс нодовые выпуски шли в
+# ECDSA, на котором ломается REALITY-фолбэк — инцидент tkh-ee 15.09). Здесь нода получает
+# только placeholder; после установки с pearly выполнить:
+#   deploy-node-cert.sh stream-pop.net <ssh-алиас> && deploy-node-cert.sh cdnpop.net <ssh-алиас>
 issue_node_sni_certs() {
-  issue_node_sni_cert "stream-pop.net" sp "${CF_Token_SP:-}"
-  issue_node_sni_cert "cdnpop.net"     cp "${CF_Token_CP:-}"
+  issue_node_sni_cert "stream-pop.net" sp
+  issue_node_sni_cert "cdnpop.net"     cp
 }
 
-# $1 = домен, $2 = префикс файлов (sp|cp), $3 = CF-токен этого домена
+# $1 = домен, $2 = префикс файлов (sp|cp)
 issue_node_sni_cert() {
-  local domain="$1" pfx="$2" token="$3"
+  local domain="$1" pfx="$2"
   local cert_dir="$INSTALL_DIR/nginx/ssl/vinnypuxtomoon"   # эту папку монтирует potato
-  local acme="/root/.acme.sh/acme.sh"
 
   # ⚠ nginx.conf держит server-блоки для обеих семей с ЖЁСТКИМИ путями к
   # {sp,cp}-cert.pem/{sp,cp}-key.pem. Файла нет → nginx НЕ СТАРТУЕТ ВООБЩЕ (не «блок
   # пропущен»), и нода остаётся без selfsteal-фолбэка. Поэтому placeholder
-  # кладём ВСЕГДА и заранее — реальный cert его просто перезапишет ниже.
+  # кладём ВСЕГДА и заранее — реальный cert его перезапишет раздача с pearly.
   # Прецедент: sh-us 2026-09-01 — cp-cert.pem не раскладывался вовсе, wombat ушёл
   # в рестарт-петлю на `[emerg] cannot load certificate .../cp-cert.pem`.
   if [[ ! -s "$cert_dir/$pfx-cert.pem" ]]; then
@@ -557,27 +551,7 @@ issue_node_sni_cert() {
     chmod 600 "$cert_dir/$pfx-key.pem"
   fi
 
-  [[ -n "$token" ]] || { info "Токен для *.$domain не задан — оставляю placeholder"; return 0; }
-  [[ -x "$acme" ]] || { warn "acme.sh нет — оставляю placeholder для *.$domain"; return 0; }
-
-  info "Выпуск wildcard cert для *.$domain (node-SNI домен)..."
-  local zid; zid=$(cf_zone_id "$domain" "$token")
-  [[ -n "$zid" ]] || warn "zone id для $domain не определился — продление может конфликтовать с другими зонами"
-  if CF_Token="$token" CF_Zone_ID="$zid" "$acme" --issue --dns dns_cf \
-       -d "$domain" -d "*.$domain" --keylength 2048 \
-       > "/tmp/acme-$pfx.log" 2>&1 \
-     || grep -qE 'Domains not changed|Skip, Next renewal' "/tmp/acme-$pfx.log"; then
-    "$acme" --install-cert -d "$domain" \
-      --fullchain-file "$cert_dir/$pfx-cert.pem" \
-      --key-file       "$cert_dir/$pfx-key.pem" \
-      --reloadcmd      "docker restart potato >/dev/null 2>&1 || true" > /dev/null 2>&1
-    chmod 600 "$cert_dir/$pfx-key.pem" 2>/dev/null || true
-    ok "Cert *.$domain установлен ($pfx-cert.pem) — Trojan/HY2 на профилях -11 поднимутся"
-  else
-    warn "acme.sh не выпустил *.$domain — Trojan/HY2 на профиле -11 не стартуют:"
-    tail -10 "/tmp/acme-$pfx.log"
-  fi
-  rm -f "/tmp/acme-$pfx.log"
+  info "*.$domain: placeholder на месте. Настоящий серт — с pearly: deploy-node-cert.sh $domain <ssh-алиас>"
 }
 
 # ─── Гарантирует наличие vinnypuxtomoon cert (нужен http-уровню nginx.conf) ──
@@ -622,8 +596,6 @@ WITH_BRIDGES="false"
 RU_BRIDGE="false"   # xHTTP-only RU-мост: открываем лишь SSH/mgmt/443/metrics (см --ru-bridge)
 F2B_IGNOREIP="${F2B_IGNOREIP:-}"  # доп. admin/dev IP|CIDR для fail2ban ignoreip (через --f2b-ignoreip; НЕ хардкодить в репо)
 CF_Token="${CF_Token:-}"  # Cloudflare API token для acme.sh DNS-01 (опционально)
-CF_Token_SP="${CF_Token_SP:-}"  # токен для *.stream-pop.net (своя CF-зона)
-CF_Token_CP="${CF_Token_CP:-}"  # токен для *.cdnpop.net (своя CF-зона)
 AGENT_UUID="${AGENT_UUID:-}"    # UUID ноды в админ-панели (для otter)
 AGENT_TOKEN="${AGENT_TOKEN:-}"  # agent-токен из той же панели
 NO_WOMBAT="false"   # --no-wombat: не поднимать wombat (coexist с чужим стеком на :80/:443, напр. Guardora)
@@ -647,8 +619,6 @@ while [[ $# -gt 0 ]]; do
     --ru-bridge)      RU_BRIDGE="true";   shift ;;
     --f2b-ignoreip)   F2B_IGNOREIP="$2";  shift 2 ;;
     --cf-token)       CF_Token="$2";      shift 2 ;;
-    --cf-token-sp)    CF_Token_SP="$2";   shift 2 ;;   # токен CF для *.stream-pop.net (свой аккаунт)
-    --cf-token-cp)    CF_Token_CP="$2";   shift 2 ;;   # токен CF для *.cdnpop.net (свой аккаунт)
     --agent-uuid)     AGENT_UUID="$2";    shift 2 ;;   # UUID ноды в админ-панели (otter)
     --agent-token)    AGENT_TOKEN="$2";   shift 2 ;;   # agent-токен ноды (otter)
     --no-wombat)      NO_WOMBAT="true";   shift ;;
