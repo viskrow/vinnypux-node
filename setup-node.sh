@@ -799,7 +799,7 @@ net.ipv4.ip_local_port_range = 1024 65535
 # Пока xray лежал, nginx полез на 127.0.0.1:10086 и ядро выдало ему эфемерный SOURCE-порт
 # 10086 → src==dst на loopback → сокет соединился САМ С СОБОЙ и занял порт → xray больше не
 # биндится → вечный луп рестарта, нода мертва. Заводишь новый внутренний инбаунд — СРАЗУ сюда.
-net.ipv4.ip_local_reserved_ports = 443,2053,2096,4443,4444,5443,6443,7443-7447,8080,8443-8444,9443,10086,${NODE_PORT},${NODE_EXPORTER_PORT}
+net.ipv4.ip_local_reserved_ports = 443,2053,2096,4443,4444,4445,4446,5443,6443,7443-7447,8080,8443-8444,9443,10086,${NODE_PORT},${NODE_EXPORTER_PORT}
 # ── Анти-спуф (loose RP-filter, безопасно для multi-IP/policy-routing) ────────
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
@@ -1368,6 +1368,27 @@ ASTIMER
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable --now antiscanner.timer 2>/dev/null || true
 ok "AntiScanner: $(iptables -S SCANNERS-BLOCK 2>/dev/null | grep -c DROP || echo 0) правил (SCANNERS-BLOCK, boot+daily)"
+
+# ─── conntrack-ACCEPT первым в INPUT ─────────────────────────────────────────
+# SCANNERS-BLOCK/EDGE-DENY (и FILTER_MOBILE_443 на whitelist-нодах) встают в INPUT 1 ⇒
+# КАЖДЫЙ пакет живых соединений шёл через сотни DROP-правил до ufw-before-input
+# (tw-wl: sys 31% + softirq 33%). Фильтры нужны только NEW — established пропускаем сразу.
+# Порядок ломает любой, кто вставит правило в INPUT 1 (таймер antiscanner после ребута) ⇒ cron чинит.
+cat > /usr/local/sbin/conntrack-first <<'CTFIRST'
+#!/bin/bash
+R="-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+for c in iptables ip6tables; do
+  [ "$($c -S INPUT 2>/dev/null | sed -n 2p)" = "-A INPUT $R" ] && continue
+  while $c -D INPUT $R 2>/dev/null; do :; done
+  $c -I INPUT 1 $R
+done
+CTFIRST
+chmod 755 /usr/local/sbin/conntrack-first
+/usr/local/sbin/conntrack-first || true
+if ! crontab -l 2>/dev/null | grep -q 'conntrack-first'; then
+  { crontab -l 2>/dev/null || true; echo '*/10 * * * * /usr/local/sbin/conntrack-first'; } | crontab -
+fi
+ok "conntrack-ACCEPT первым в INPUT (cron */10)"
 
 # ─── SSH anti-flood (без смены порта) ─────────────────────────────────────────
 # Сканеры флудят :22, держат unauth-слоты до LoginGraceTime → MaxStartups
