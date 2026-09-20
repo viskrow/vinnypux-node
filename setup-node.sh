@@ -1296,7 +1296,8 @@ cat > /usr/local/sbin/update-antiscanner.sh <<'ASUPD'
 # AntiScanner updater: gist (best-effort) -> cache, MERGED with local manual list, dedup.
 URL="https://gist.githubusercontent.com/sngvy/07cee7ac810c9d222fbebddff8c1d1b8/raw/blacklist.txt"
 CACHE="/usr/local/etc/antiscanner_blacklist.txt"     # last-good gist copy (github blocked on some RU nodes)
-MANUAL="/usr/local/etc/antiscanner_manual.txt"       # our curated ГРЧЦ/CyberOK list (extend freely)
+MANUAL="/usr/local/etc/antiscanner_manual.txt"
+EXCLUDE="/usr/local/etc/antiscanner_exclude.txt"   # сети карьеров, которые нельзя блокировать даже из гиста       # our curated ГРЧЦ/CyberOK list (extend freely)
 TEMP_FILE=$(mktemp); LIST=$(mktemp)
 MODE="iptables"
 
@@ -1325,6 +1326,12 @@ fi
 # strip comments/blank, trim, dedup
 sed -e 's/#.*//' -e 's/[[:space:]]//g' "$LIST" | grep -E '.' | sort -u > "${LIST}.clean"
 mv "${LIST}.clean" "$LIST"
+if [[ -s "$EXCLUDE" ]]; then
+    sed -e 's/#.*//' -e 's/[[:space:]]//g' "$EXCLUDE" | grep -E '.' | sort -u > "${LIST}.excl"
+    { grep -Fvx -f "${LIST}.excl" "$LIST" || true; } > "${LIST}.kept"
+    mv "${LIST}.kept" "$LIST"
+    rm -f "${LIST}.excl"
+fi
 
 if [[ -s "$LIST" ]]; then
     setup_iptables_chains
