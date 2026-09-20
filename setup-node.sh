@@ -902,6 +902,10 @@ cat > /usr/local/sbin/enable-rps.sh << 'RPSSH'
 #!/bin/sh
 IF=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
 [ -n "$IF" ] || exit 0
+# очередей не меньше, чем ядер (RSS уже раскладывает по всем CPU) ⇒ RPS избыточен и только
+# добавляет IPI/промахи кэша — так же говорит kernel Documentation/networking/scaling.rst
+Q=$(ls -d /sys/class/net/"$IF"/queues/rx-* 2>/dev/null | wc -l)
+[ "$Q" -ge "$(nproc)" ] && exit 0
 # маска = 32-битные группы через запятую: в shell 1<<64 схлопывается в 1, и на 64-ядерной
 # ноде одним числом получилась бы маска 0 (RPS молча выключен)
 N=$(nproc); M=""
