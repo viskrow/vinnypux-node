@@ -850,14 +850,14 @@ systemctl daemon-reexec > /dev/null 2>&1 || true
 # fq qdisc
 IFACE=$(ip route | awk '/^default/{print $5; exit}')
 if [[ -n "$IFACE" ]]; then
-  tc qdisc replace dev "$IFACE" root fq flow_limit 250 2>/dev/null || true
+  tc qdisc replace dev "$IFACE" root fq flow_limit 2000 2>/dev/null || true
   cat > /etc/systemd/system/set-qdisc-fq.service << SVCEOF
 [Unit]
 Description=Set fq qdisc for BBR on ${IFACE}
 After=network.target
 [Service]
 Type=oneshot
-ExecStart=/sbin/tc qdisc replace dev ${IFACE} root fq flow_limit 250
+ExecStart=/sbin/tc qdisc replace dev ${IFACE} root fq flow_limit 2000
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
