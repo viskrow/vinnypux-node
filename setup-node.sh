@@ -973,7 +973,7 @@ if [[ "$RU_BRIDGE" != "true" ]]; then
   ufw allow 2096/udp          comment "QUIC"       > /dev/null
 fi
 # wombat (docker bridge 172.18.x) → xray :4443 cdn-xhttp inbound
-ufw allow from 172.16.0.0/12 to any port 4443 proto tcp comment "cdn-xhttp internal" > /dev/null
+ufw allow from 172.16.0.0/12 to any port 4443 proto tcp comment "internal" > /dev/null
 ufw allow "$NODE_EXPORTER_PORT"/tcp comment "metrics" > /dev/null
 
 # --extra-ports: доп. ufw-allow (coexist — сохранить порты параллельного стека типа
