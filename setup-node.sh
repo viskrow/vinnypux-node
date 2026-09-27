@@ -752,16 +752,16 @@ elif [[ "$RAM_MB" -ge 2048 ]]; then BUF=16777216   # 16MB — 2-4 GB RAM
 else                                BUF=8388608; fi #  8MB — < 2 GB RAM
 info "RAM: ${RAM_MB}MB → TCP буфер: $((BUF/1024/1024))MB"
 
-cat > /etc/sysctl.d/99-vpn-perf.conf << EOF
+cat > /etc/sysctl.d/99-net-perf.conf << EOF
 # ── BBR3 ──────────────────────────────────────
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 # ── TCP буферы (под RAM: ${RAM_MB}MB) ─────────
 net.core.rmem_max = ${BUF}
 net.core.wmem_max = ${BUF}
-# rmem/wmem_max = ПОТОЛОК (приложение опт-инит через setsockopt). UDP-relay сокеты xray (freedom-out,
-# проксирование юзерского QUIC/HTTP3) SO_RCVBUF НЕ ставят → берут rmem_DEFAULT; дефолт ядра 208КБ мал →
-# QUIC-burst переполняет буфер → RcvbufErrors (дропы→ретрансмиты). Поднимаем default (fleet-check 2026-07-21).
+# rmem/wmem_max = ПОТОЛОК (приложение опт-инит через setsockopt). UDP-relay сокеты воркера
+# SO_RCVBUF НЕ ставят → берут rmem_DEFAULT; дефолт ядра 208КБ мал → burst переполняет буфер
+# → RcvbufErrors (дропы→ретрансмиты). Поднимаем default (2026-07-21).
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
 net.core.optmem_max = 65536
@@ -793,19 +793,19 @@ net.core.somaxconn = 65535
 net.ipv4.ip_local_port_range = 1024 65535
 # ── Резерв сервисных портов от эфемерного диапазона ───────────────────────────
 # port_range расширен до 1024 → ядро иначе хватает сервисные порты (2053/7443/7444/...)
-# как эфемерные source-порты исходящих коннектов; если занят в момент старта xray →
-# инбаунд падает с "bind: address already in use" и НЕ ретраит (порт молча не слушается).
-# ⚠ ЛОВУШКА (se-1, 2026-08-06): loopback-порты обязательны в списке НЕ МЕНЬШЕ публичных.
-# Пока xray лежал, nginx полез на 127.0.0.1:10086 и ядро выдало ему эфемерный SOURCE-порт
-# 10086 → src==dst на loopback → сокет соединился САМ С СОБОЙ и занял порт → xray больше не
-# биндится → вечный луп рестарта, нода мертва. Заводишь новый внутренний инбаунд — СРАЗУ сюда.
+# как эфемерные source-порты исходящих коннектов; если занят в момент старта воркера →
+# листенер падает с "bind: address already in use" и НЕ ретраит (порт молча не слушается).
+# ⚠ ЛОВУШКА (2026-08-06): loopback-порты обязательны в списке НЕ МЕНЬШЕ публичных.
+# Пока воркер лежал, фронт полез на 127.0.0.1:10086 и ядро выдало ему эфемерный SOURCE-порт
+# 10086 → src==dst на loopback → сокет соединился САМ С СОБОЙ и занял порт → воркер больше не
+# биндится → вечный луп рестарта, нода мертва. Заводишь новый внутренний листенер — СРАЗУ сюда.
 net.ipv4.ip_local_reserved_ports = 443,2053,2096,4443,4444,4445,4446,5443,6443,7443-7447,8080,8443-8444,9443,10086,${NODE_PORT},${NODE_EXPORTER_PORT}
 # ── Анти-спуф (loose RP-filter, безопасно для multi-IP/policy-routing) ────────
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
 # ── Память / swap (не свопиться под нагрузкой) ───────────────────────────────
 vm.swappiness = 10
-# ── UDP min-буферы (Hysteria2 / QUIC) ────────────────────────────────────────
+# ── UDP min-буферы (QUIC) ────────────────────────────────────────
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 # ── SYN-флуд + TIME-WAIT хардеринг ───────────────────────────────────────────
@@ -818,7 +818,7 @@ net.ipv4.tcp_rfc1337 = 1
 net.ipv4.tcp_no_metrics_save = 1
 fs.file-max = 1000000
 EOF
-sysctl -p /etc/sysctl.d/99-vpn-perf.conf > /dev/null
+sysctl -p /etc/sysctl.d/99-net-perf.conf > /dev/null
 
 # Conntrack
 if modprobe nf_conntrack 2>/dev/null || lsmod | grep -q nf_conntrack; then
@@ -832,7 +832,7 @@ EOF
 fi
 
 # ulimits — system-wide nofile=1048576 (для всех кроме docker, у docker свой --ulimit)
-cat > /etc/security/limits.d/99-vpn-nofile.conf << 'EOF'
+cat > /etc/security/limits.d/99-net-nofile.conf << 'EOF'
 *    soft nofile 1048576
 *    hard nofile 1048576
 root soft nofile 1048576
@@ -920,7 +920,7 @@ exit 0
 RPSSH
 chmod +x /usr/local/sbin/enable-rps.sh
 /usr/local/sbin/enable-rps.sh
-cat > /etc/systemd/system/rps-vpn.service << 'RPSSVC'
+cat > /etc/systemd/system/rps-tune.service << 'RPSSVC'
 [Unit]
 Description=Spread NIC RX softirq across all CPUs
 After=network-online.target
@@ -933,7 +933,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 RPSSVC
 systemctl daemon-reload
-systemctl enable rps-vpn.service > /dev/null 2>&1
+systemctl enable rps-tune.service > /dev/null 2>&1
 
 # THP off (latency: убирает фоновую memory-compaction под нагрузкой; THP — это /sys, не sysctl)
 echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
@@ -967,10 +967,10 @@ ufw allow 443/tcp           comment "HTTPS"      > /dev/null
 # RU-bridge (xHTTP-only) ноды слушают лишь :443 (nginx stream→xray :4444) →
 # direct-VPN порты им не нужны; --ru-bridge их не открывает (сужаем attack surface).
 if [[ "$RU_BRIDGE" != "true" ]]; then
-  ufw allow 2053/tcp          comment "HTTPS-cf"   > /dev/null
-  ufw allow 7443/tcp          comment "trojan"     > /dev/null
-  ufw allow 7444/tcp          comment "grpc"       > /dev/null
-  ufw allow 2096/udp          comment "hysteria2"  > /dev/null
+  ufw allow 2053/tcp          comment "HTTPS-alt"   > /dev/null
+  ufw allow 7443/tcp          comment "HTTPS-alt2"   > /dev/null
+  ufw allow 7444/tcp          comment "HTTPS-alt3"   > /dev/null
+  ufw allow 2096/udp          comment "QUIC"       > /dev/null
 fi
 # wombat (docker bridge 172.18.x) → xray :4443 cdn-xhttp inbound
 ufw allow from 172.16.0.0/12 to any port 4443 proto tcp comment "cdn-xhttp internal" > /dev/null
