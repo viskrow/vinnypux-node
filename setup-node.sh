@@ -1759,6 +1759,41 @@ cat > /usr/local/etc/antiscanner_manual.txt <<'ASMANUAL'
 68.69.177.0/24
 #   AS402506 ZENIX - Zenixcloud, US (1×/24, хитов 7)
 154.201.74.0/24
+# --- scanner-harvest 2026-09-28: улов ханипотов, после ревью (21 подсетей)
+#   AS7488 CNSERVER-AP-AS - CNServer LLC, US (4×/24, хитов 6)
+5.253.38.0/24
+45.41.55.0/24
+144.225.6.0/24
+188.255.156.0/24
+#   AS9009 M247 - M247 Europe SRL, RO (2×/24, хитов 615)
+45.84.122.0/24
+185.253.162.0/24
+#   AS14956 ROUTERHOSTING - RouterHosting LLC, US (1×/24, хитов 155)
+107.189.25.0/24
+#   AS42675 OBEHOSTING - Obehosting AB, SE (2×/24, хитов 3)
+185.157.163.0/24
+217.64.148.0/24
+#   AS61272 IST-AS - UAB Bacloud, LT (1×/24, хитов 4)
+45.132.194.0/24
+#   AS63473 HOSTHATCH - HostHatch, LLC, US (1×/24, хитов 6)
+167.104.160.0/24
+#   AS63737 VIETSERVER-AS-VN - VIETSERVER SERVICES TECHNOLOGY COMPANY LI (1×/24, хитов 483)
+103.176.110.0/24
+#   AS142002 SCLOUDPTELTD-AS - Scloud Pte Ltd, SG (1×/24, хитов 179)
+165.154.194.0/24
+#   AS142403 YISUCLOUDLTD-HK - YISU CLOUD LTD, HK (1×/24, хитов 4)
+39.109.116.0/24
+#   AS202053 UPCLOUD - UpCloud Ltd, FI (1×/24, хитов 37)
+81.27.106.0/24
+#   AS207847 CloudBlast - CloudBlast LLC, US (1×/24, хитов 4)
+178.83.121.0/24
+#   AS214036 ULTAHOST-AS - Ultahost, Inc., US (1×/24, хитов 15)
+84.200.89.0/24
+#   AS396073 MAJESTIC-HOSTING-01 - Majestic Hosting Solutions, LLC, US (2×/24, хитов 4)
+45.13.214.0/24
+104.37.173.0/24
+#   AS402506 ZENIX - Zenixcloud, US (1×/24, хитов 8)
+45.205.25.0/24
 ASMANUAL
 cat > /usr/local/sbin/update-antiscanner.sh <<'ASUPD'
 #!/bin/bash
