@@ -762,7 +762,9 @@ net.core.wmem_max = ${BUF}
 # rmem/wmem_max = ПОТОЛОК (приложение опт-инит через setsockopt). UDP-relay сокеты воркера
 # SO_RCVBUF НЕ ставят → берут rmem_DEFAULT; дефолт ядра 208КБ мал → burst переполняет буфер
 # → RcvbufErrors (дропы→ретрансмиты). Поднимаем default (2026-07-21).
-net.core.rmem_default = 1048576
+# 1 МиБ не хватало: 4 МиБ на 20 ч сняли потери UDP 0.328% → 0.077% (2026-09-28). Общий
+# расход памяти UDP ограничен net.ipv4.udp_mem, а не числом сокетов.
+net.core.rmem_default = 4194304
 net.core.wmem_default = 1048576
 net.core.optmem_max = 65536
 net.ipv4.tcp_rmem = 4096 87380 ${BUF}
